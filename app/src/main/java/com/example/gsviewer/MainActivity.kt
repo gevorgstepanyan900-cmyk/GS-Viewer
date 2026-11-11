@@ -80,7 +80,7 @@ class MainActivity : Activity() {
                 customViewCallback?.onCustomViewHidden()
                 webView.visibility = View.VISIBLE
                 playlistButton.visibility = View.VISIBLE
-                repeatButton.visibility = View.VISIBLE
+                updateSaveButton(webView.url)
                 updateAutoNextButtonVisibility()
                 updateSaveButton(webView.url)
             }
@@ -113,7 +113,8 @@ class MainActivity : Activity() {
         saveButton.visibility = View.INVISIBLE
         rootFrame.addView(saveButton, fabParams(Gravity.BOTTOM or Gravity.END, 16))
 
-        repeatButton = makeFab("🔂") {
+        repeatButton = makeFab("🔂")
+        repeatButton.visibility = View.INVISIBLE {
             isRepeatEnabled = !isRepeatEnabled
             updateFabColor(repeatButton, isRepeatEnabled)
             val stateText = if (isRepeatEnabled) "Կրկնությունը ՄԻԱՑՎԱԾ Է" else "Կրկնությունը ԱՆՋԱՏՎԱԾ Է"
@@ -267,7 +268,11 @@ class MainActivity : Activity() {
     private fun updateSaveButton(url: String?) {
         val id = YoutubeHelper.extractVideoId(url)
         if (customView == null) {
-            saveButton.visibility = if (id != null) View.VISIBLE else View.INVISIBLE
+            val hasVideo = (id != null)
+            saveButton.visibility = if (hasVideo) View.VISIBLE else View.INVISIBLE
+            // repeatButton հայտնվում է միայն այն ժամանակ, երբ վիդեոն պատրաստ է և հայտնի են բոլոր տվյալները (id != null), 
+            // կամ քանի դեռ repeat-ը միացված է (isRepeatEnabled), որպեսզի հնարավոր լինի կառավարել այն անկախ վիդեոյի փոփոխությունից։
+            repeatButton.visibility = if (hasVideo || isRepeatEnabled) View.VISIBLE else View.INVISIBLE
         }
     }
 
