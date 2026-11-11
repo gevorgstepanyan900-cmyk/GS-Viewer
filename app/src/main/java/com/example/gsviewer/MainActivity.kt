@@ -162,23 +162,21 @@ class MainActivity : Activity() {
     }
 
     private fun injectEndedListener() {
-        val js = """
-            (function() {
-                function attachListener() {
-                    var video = document.querySelector('video');
-                    if (video && !video.hasAttribute('data-ended-listener')) {
-                        video.setAttribute('data-ended-listener', 'true');
-                        video.addEventListener('ended', function() {
-                            if (window.AndroidBridge) {
-                                window.AndroidBridge.onVideoEnded();
-                            }
-                        });
-                    }
-                }
-                attachListener();
-                setInterval(attachListener, 1000);
-            })();
-        """.trimIndent()
+        val js = "(function() {" +
+                "function attachListener() {" +
+                "var videos = document.querySelectorAll('video');" +
+                "videos.forEach(function(video) {" +
+                "if (!video.hasAttribute('data-ended-listener')) {" +
+                "video.setAttribute('data-ended-listener', 'true');" +
+                "video.addEventListener('ended', function() {" +
+                "if (window.AndroidBridge) { window.AndroidBridge.onVideoEnded(); }" +
+                "});" +
+                "}" +
+                "});" +
+                "}" +
+                "attachListener();" +
+                "setInterval(attachListener, 1000);" +
+                "})();"
         webView.evaluateJavascript(js, null)
     }
 
@@ -187,7 +185,7 @@ class MainActivity : Activity() {
         fun onVideoEnded() {
             runOnUiThread {
                 if (isRepeatEnabled) {
-                    webView.evaluateJavascript("var v = document.querySelector('video'); if (v) { v.currentTime = 0; v.play(); }", null)
+                    webView.evaluateJavascript("var videos = document.querySelectorAll('video'); videos.forEach(function(v) { v.currentTime = 0; v.play(); });", null)
                 } else if (isAutoNextEnabled && currentPlaylistId != null && currentVideoIndex >= 0) {
                     playNextVideoInPlaylist()
                 }

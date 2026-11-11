@@ -12,7 +12,7 @@ object YoutubeHelper {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    private val videoIdRegex = Regex("(?:v=|youtu\\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})")
+    private val videoIdRegex = Regex("(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})")
 
     fun extractVideoId(url: String?): String? {
         if (url == null) return null
