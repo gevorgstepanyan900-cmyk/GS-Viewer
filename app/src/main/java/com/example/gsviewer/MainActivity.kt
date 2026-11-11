@@ -81,7 +81,7 @@ class MainActivity : Activity() {
                 webView.visibility = View.VISIBLE
                 playlistButton.visibility = View.VISIBLE
                 repeatButton.visibility = View.VISIBLE
-                autoNextButton.visibility = View.VISIBLE
+                updateAutoNextButtonVisibility()
                 updateSaveButton(webView.url)
             }
         }
@@ -127,6 +127,7 @@ class MainActivity : Activity() {
             val stateText = if (isAutoNextEnabled) "Ավտո-հաջորդը ՄԻԱՑՎԱԾ Է" else "Ավտո-հաջորդը ԱՆՋԱՏՎԱԾ Է"
             Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
         }
+        autoNextButton.visibility = View.GONE
         rootFrame.addView(autoNextButton, fabParams(Gravity.BOTTOM or Gravity.START, 80))
 
         setContentView(rootFrame)
@@ -144,24 +145,38 @@ class MainActivity : Activity() {
         currentPlaylistId = intent.getStringExtra("playlist_id")
         currentVideoIndex = intent.getIntExtra("video_index", -1)
 
+        updateAutoNextButtonVisibility()
+
         when {
             openUrl != null -> webView.loadUrl(openUrl)
             else -> if (webView.url == null) webView.loadUrl("https://m.youtube.com")
         }
     }
 
+    private fun updateAutoNextButtonVisibility() {
+        if (customView == null && currentPlaylistId != null && currentVideoIndex >= 0) {
+            autoNextButton.visibility = View.VISIBLE
+        } else {
+            autoNextButton.visibility = View.GONE
+        }
+    }
+
     private fun injectEndedListener() {
         val js = """
             (function() {
-                var video = document.querySelector('video');
-                if (video && !video.hasAttribute('data-ended-listener')) {
-                    video.setAttribute('data-ended-listener', 'true');
-                    video.addEventListener('ended', function() {
-                        if (window.AndroidBridge) {
-                            window.AndroidBridge.onVideoEnded();
-                        }
-                    });
+                function attachListener() {
+                    var video = document.querySelector('video');
+                    if (video && !video.hasAttribute('data-ended-listener')) {
+                        video.setAttribute('data-ended-listener', 'true');
+                        video.addEventListener('ended', function() {
+                            if (window.AndroidBridge) {
+                                window.AndroidBridge.onVideoEnded();
+                            }
+                        });
+                    }
                 }
+                attachListener();
+                setInterval(attachListener, 1000);
             })();
         """.trimIndent()
         webView.evaluateJavascript(js, null)
