@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -23,12 +24,21 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var saveButton: TextView
     private lateinit var playlistButton: TextView
+    private lateinit var repeatButton: TextView
+    private lateinit var autoNextButton: TextView
+
     private val scope = CoroutineScope(Dispatchers.Main)
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private lateinit var rootFrame: FrameLayout
 
-    @SuppressLint("SetJavaScriptEnabled")
+    // Loop & Playlist state
+    private var isRepeatEnabled: Boolean = false
+    private var isAutoNextEnabled: Boolean = false
+    private var currentPlaylistId: String? = null
+    private var currentVideoIndex: Int = -1
+
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         rootFrame = FrameLayout(this)
@@ -41,6 +51,8 @@ class MainActivity : Activity() {
             loadWithOverviewMode = true
             useWideViewPort = true
         }
+
+        webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
@@ -57,6 +69,8 @@ class MainActivity : Activity() {
                 webView.visibility = View.GONE
                 saveButton.visibility = View.GONE
                 playlistButton.visibility = View.GONE
+                repeatButton.visibility = View.GONE
+                autoNextButton.visibility = View.GONE
             }
 
             override fun onHideCustomView() {
@@ -66,6 +80,8 @@ class MainActivity : Activity() {
                 customViewCallback?.onCustomViewHidden()
                 webView.visibility = View.VISIBLE
                 playlistButton.visibility = View.VISIBLE
+                repeatButton.visibility = View.VISIBLE
+                autoNextButton.visibility = View.VISIBLE
                 updateSaveButton(webView.url)
             }
         }
@@ -74,10 +90,12 @@ class MainActivity : Activity() {
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                 super.doUpdateVisitedHistory(view, url, isReload)
                 updateSaveButton(url)
+                injectEndedListener()
             }
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 updateSaveButton(url)
+                injectEndedListener()
             }
         }
 
@@ -89,21 +107,101 @@ class MainActivity : Activity() {
         playlistButton = makeFab("📁") {
             startActivity(Intent(this@MainActivity, PlaylistActivity::class.java))
         }
-        rootFrame.addView(playlistButton, fabParams(Gravity.BOTTOM or Gravity.START))
+        rootFrame.addView(playlistButton, fabParams(Gravity.BOTTOM or Gravity.START, 16))
 
         saveButton = makeFab("⭐") { showPlaylistSelectionDialog() }
         saveButton.visibility = View.INVISIBLE
-        rootFrame.addView(saveButton, fabParams(Gravity.BOTTOM or Gravity.END))
+        rootFrame.addView(saveButton, fabParams(Gravity.BOTTOM or Gravity.END, 16))
+
+        repeatButton = makeFab("🔂") {
+            isRepeatEnabled = !isRepeatEnabled
+            updateFabColor(repeatButton, isRepeatEnabled)
+            val stateText = if (isRepeatEnabled) "Կրկնությունը ՄԻԱՑՎԱԾ Է" else "Կրկնությունը ԱՆՋԱՏՎԱԾ Է"
+            Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
+        }
+        rootFrame.addView(repeatButton, fabParams(Gravity.BOTTOM or Gravity.END, 80))
+
+        autoNextButton = makeFab("⏭️") {
+            isAutoNextEnabled = !isAutoNextEnabled
+            updateFabColor(autoNextButton, isAutoNextEnabled)
+            val stateText = if (isAutoNextEnabled) "Ավտո-հաջորդը ՄԻԱՑՎԱԾ Է" else "Ավտո-հաջորդը ԱՆՋԱՏՎԱԾ Է"
+            Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
+        }
+        rootFrame.addView(autoNextButton, fabParams(Gravity.BOTTOM or Gravity.START, 80))
 
         setContentView(rootFrame)
 
-        val openUrl = intent.getStringExtra("open_url")
-        when {
-            openUrl != null -> webView.loadUrl(openUrl)
-            savedInstanceState != null -> webView.restoreState(savedInstanceState)
-            else -> webView.loadUrl("https://m.youtube.com")
+        handleIntent(intent)
+        if (savedInstanceState != null && intent.getStringExtra("open_url") == null) {
+            webView.restoreState(savedInstanceState)
         }
         updateSaveButton(webView.url)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        val openUrl = intent.getStringExtra("open_url")
+        currentPlaylistId = intent.getStringExtra("playlist_id")
+        currentVideoIndex = intent.getIntExtra("video_index", -1)
+
+        when {
+            openUrl != null -> webView.loadUrl(openUrl)
+            else -> if (webView.url == null) webView.loadUrl("https://m.youtube.com")
+        }
+    }
+
+    private fun injectEndedListener() {
+        val js = """
+            (function() {
+                var video = document.querySelector('video');
+                if (video && !video.hasAttribute('data-ended-listener')) {
+                    video.setAttribute('data-ended-listener', 'true');
+                    video.addEventListener('ended', function() {
+                        if (window.AndroidBridge) {
+                            window.AndroidBridge.onVideoEnded();
+                        }
+                    });
+                }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    private inner class WebAppInterface {
+        @JavascriptInterface
+        fun onVideoEnded() {
+            runOnUiThread {
+                if (isRepeatEnabled) {
+                    webView.evaluateJavascript("var v = document.querySelector('video'); if (v) { v.currentTime = 0; v.play(); }", null)
+                } else if (isAutoNextEnabled && currentPlaylistId != null && currentVideoIndex >= 0) {
+                    playNextVideoInPlaylist()
+                }
+            }
+        }
+    }
+
+    private fun playNextVideoInPlaylist() {
+        val playlists = PlaylistStore.getPlaylists(this)
+        val playlist = playlists.find { it.id == currentPlaylistId } ?: return
+        val videos = playlist.videos ?: return
+
+        val nextIndex = currentVideoIndex + 1
+        if (nextIndex < videos.size) {
+            currentVideoIndex = nextIndex
+            val nextVideo = videos[nextIndex]
+            webView.loadUrl(nextVideo.url)
+            Toast.makeText(this, "Հաջորդ տեսանյութը: ${nextVideo.title}", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Փլեյլիստի վերջին տեսանյութն ավարտվեց", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun updateFabColor(button: TextView, active: Boolean) {
+        val color = if (active) Color.argb(255, 0x4C, 0xAF, 0x50) else Color.argb(230, 0x21, 0x96, 0xF3)
+        button.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+        }
     }
 
     private fun makeFab(text: String, onClick: () -> Unit): TextView {
@@ -122,12 +220,12 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun fabParams(gravity: Int) = FrameLayout.LayoutParams(
+    private fun fabParams(gravity: Int, marginSideDp: Int) = FrameLayout.LayoutParams(
         (56 * resources.displayMetrics.density).toInt(),
         (56 * resources.displayMetrics.density).toInt(),
         gravity
     ).apply {
-        val m = (16 * resources.displayMetrics.density).toInt()
+        val m = (marginSideDp * resources.displayMetrics.density).toInt()
         leftMargin = m
         rightMargin = m
         bottomMargin = (96 * resources.displayMetrics.density).toInt()
@@ -195,7 +293,7 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-        intent?.getStringExtra("open_url")?.let { webView.loadUrl(it) }
+        handleIntent(intent)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

@@ -27,8 +27,11 @@ class VideosActivity : Activity() {
         adapter = VideoAdapter(
             items = videos,
             onClick = { video ->
+                val videoIndex = videos.indexOf(video)
                 val intent = Intent(this, MainActivity::class.java).apply {
                     putExtra("open_url", video.url)
+                    putExtra("playlist_id", playlistId)
+                    putExtra("video_index", videoIndex)
                     flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 }
                 startActivity(intent)
