@@ -3,11 +3,17 @@ package com.example.gsviewer
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
@@ -42,12 +48,53 @@ class MainActivity : Activity() {
     private var isAutoNextEnabled: Boolean = false
     private var currentPlaylistId: String? = null
     private var currentVideoIndex: Int = -1
+    private var isVideoPlaying: Boolean = true
 
-    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+    companion object {
+        private const val ACTION_MEDIA_CONTROL = "com.example.gsviewer.MEDIA_CONTROL"
+        private const val EXTRA_CONTROL_TYPE = "control_type"
+        private const val CONTROL_TYPE_PLAY_PAUSE = 1
+        private const val CONTROL_TYPE_REWIND = 2
+        private const val CONTROL_TYPE_FORWARD = 3
+    }
+
+    private val pipActionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent == null || intent.action != ACTION_MEDIA_CONTROL) return
+            when (intent.getIntExtra(EXTRA_CONTROL_TYPE, 0)) {
+                CONTROL_TYPE_PLAY_PAUSE -> {
+                    webView.evaluateJavascript(
+                        "(function() { var v = document.querySelector('video'); if (v) { if (v.paused) v.play(); else v.pause(); } })();",
+                        null
+                    )
+                }
+                CONTROL_TYPE_REWIND -> {
+                    webView.evaluateJavascript(
+                        "(function() { var v = document.querySelector('video'); if (v) { v.currentTime = Math.max(0, v.currentTime - 10); } })();",
+                        null
+                    )
+                }
+                CONTROL_TYPE_FORWARD -> {
+                    webView.evaluateJavascript(
+                        "(function() { var v = document.querySelector('video'); if (v) { v.currentTime = Math.min(v.duration || 999999, v.currentTime + 10); } })();",
+                        null
+                    )
+                }
+            }
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface", "UnspecifiedRegisterReceiverFlag")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         rootFrame = FrameLayout(this)
         webView = WebView(this)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(pipActionReceiver, IntentFilter(ACTION_MEDIA_CONTROL), RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(pipActionReceiver, IntentFilter(ACTION_MEDIA_CONTROL))
+        }
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -156,13 +203,117 @@ class MainActivity : Activity() {
         updatePipButtonVisibility()
     }
 
+    private fun buildPipParams(): PictureInPictureParams {
+        val actions = ArrayList<RemoteAction>()
+
+        // 1. Rewind 10s
+        val rewindIntent = PendingIntent.getBroadcast(
+            this,
+            CONTROL_TYPE_REWIND,
+            Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_REWIND),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        actions.add(
+            RemoteAction(
+                Icon.createWithResource(this, android.R.drawable.ic_media_rew),
+                "Հետ 10վ",
+                "Հետ տալ 10 վայրկյան",
+                rewindIntent
+            )
+        )
+
+        // 2. Play / Pause
+        val playPauseIntent = PendingIntent.getBroadcast(
+            this,
+            CONTROL_TYPE_PLAY_PAUSE,
+            Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_PLAY_PAUSE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val playPauseIcon = if (isVideoPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+        val playPauseTitle = if (isVideoPlaying) "Դադար" else "Նվագարկել"
+        actions.add(
+            RemoteAction(
+                Icon.createWithResource(this, playPauseIcon),
+                playPauseTitle,
+                playPauseTitle,
+                playPauseIntent
+            )
+        )
+
+        // 3. Forward 10s
+        val forwardIntent = PendingIntent.getBroadcast(
+            this,
+            CONTROL_TYPE_FORWARD,
+            Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_FORWARD),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        actions.add(
+            RemoteAction(
+                Icon.createWithResource(this, android.R.drawable.ic_media_ff),
+                "Առաջ 10վ",
+                "Առաջ տալ 10 վայրկյան",
+                forwardIntent
+            )
+        )
+
+        return PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+            .setActions(actions)
+            .build()
+    }
+
+    private fun updatePipParams() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+            try {
+                setPictureInPictureParams(buildPipParams())
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+    }
+
     private fun enterPipMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val params = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-                .build()
-            enterPictureInPictureMode(params)
+            prepareVideoForPip()
+            enterPictureInPictureMode(buildPipParams())
         }
+    }
+
+    private fun prepareVideoForPip() {
+        // Fit the HTML5 video cleanly over the viewport so it fills the PiP window properly and stays playing
+        val js = "(function() {" +
+                "var v = document.querySelector('video');" +
+                "if (v) {" +
+                "v.muted = false;" +
+                "v.play();" +
+                "v.style.position = 'fixed';" +
+                "v.style.top = '0';" +
+                "v.style.left = '0';" +
+                "v.style.width = '100vw';" +
+                "v.style.height = '100vh';" +
+                "v.style.zIndex = '999999';" +
+                "v.style.backgroundColor = 'black';" +
+                "v.style.objectFit = 'contain';" +
+                "}" +
+                "})();"
+        webView.evaluateJavascript(js, null)
+    }
+
+    private fun restoreVideoFromPip() {
+        val js = "(function() {" +
+                "var v = document.querySelector('video');" +
+                "if (v) {" +
+                "v.style.position = '';" +
+                "v.style.top = '';" +
+                "v.style.left = '';" +
+                "v.style.width = '';" +
+                "v.style.height = '';" +
+                "v.style.zIndex = '';" +
+                "v.style.backgroundColor = '';" +
+                "v.style.objectFit = '';" +
+                "}" +
+                "})();"
+        webView.evaluateJavascript(js, null)
     }
 
     override fun onUserLeaveHint() {
@@ -170,10 +321,8 @@ class MainActivity : Activity() {
         val id = YoutubeHelper.extractVideoId(webView.url)
         if (id != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && customView == null) {
             try {
-                val params = PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(16, 9))
-                    .build()
-                enterPictureInPictureMode(params)
+                prepareVideoForPip()
+                enterPictureInPictureMode(buildPipParams())
             } catch (e: Exception) {
                 // Ignore
             }
@@ -188,7 +337,13 @@ class MainActivity : Activity() {
             repeatButton.visibility = View.GONE
             autoNextButton.visibility = View.GONE
             pipButton.visibility = View.GONE
+            prepareVideoForPip()
+            // Force resume playback right after entering PiP
+            webView.postDelayed({
+                webView.evaluateJavascript("var v = document.querySelector('video'); if (v && v.paused) { v.play(); }", null)
+            }, 250)
         } else {
+            restoreVideoFromPip()
             playlistButton.visibility = View.VISIBLE
             repeatButton.visibility = View.VISIBLE
             updateAutoNextButtonVisibility()
@@ -247,6 +402,12 @@ class MainActivity : Activity() {
                 "video.addEventListener('ended', function() {" +
                 "if (window.AndroidBridge) { window.AndroidBridge.onVideoEnded(); }" +
                 "});" +
+                "video.addEventListener('play', function() {" +
+                "if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(true); }" +
+                "});" +
+                "video.addEventListener('pause', function() {" +
+                "if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(false); }" +
+                "});" +
                 "}" +
                 "});" +
                 "}" +
@@ -268,6 +429,14 @@ class MainActivity : Activity() {
                 } else if (isAutoNextEnabled && currentPlaylistId != null && currentVideoIndex >= 0) {
                     playNextVideoInPlaylist()
                 }
+            }
+        }
+
+        @JavascriptInterface
+        fun onPlaybackStateChanged(playing: Boolean) {
+            runOnUiThread {
+                isVideoPlaying = playing
+                updatePipParams()
             }
         }
     }
@@ -408,7 +577,27 @@ class MainActivity : Activity() {
         return super.onKeyDown(keyCode, event)
     }
 
-    override fun onPause() { super.onPause(); webView.onPause() }
-    override fun onResume() { super.onResume(); webView.onResume() }
-    override fun onDestroy() { webView.destroy(); super.onDestroy() }
+    override fun onPause() {
+        super.onPause()
+        // CRITICAL: Do NOT call webView.onPause() while in Picture-in-Picture mode, otherwise playback freezes!
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+            return
+        }
+        webView.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webView.onResume()
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(pipActionReceiver)
+        } catch (e: Exception) {
+            // Ignore
+        }
+        webView.destroy()
+        super.onDestroy()
+    }
 }
