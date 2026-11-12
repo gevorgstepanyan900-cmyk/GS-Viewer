@@ -236,9 +236,18 @@ class MainActivity : Activity() {
 
     private fun enterPipMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            webView.evaluateJavascript("window.__gsPipActive = true; window.__gsUserPaused = false;", null)
+            // Preserve current play/pause state when entering PiP instead of forcing play if user paused it
+            val syncJs = """
+                (function() {
+                    var v = document.querySelector('video');
+                    window.__gsPipActive = true;
+                    if (v) {
+                        window.__gsUserPaused = v.paused;
+                    }
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(syncJs, null)
             applyPipLayout(true)
-            webView.evaluateJavascript("var v = document.querySelector('video'); if(v && v.paused) v.play();", null)
 
             val params = PictureInPictureParams.Builder()
                 .setAspectRatio(Rational(16, 9))
@@ -344,7 +353,32 @@ class MainActivity : Activity() {
                 (function() {
                     var style = document.getElementById('gs-pip-style');
                     if (style) style.remove();
+
+                    // Restore interactive controls and layout cleanly after exiting PiP
+                    var v = document.querySelector('video');
+                    if (v) {
+                        v.style.pointerEvents = 'auto';
+                        // Sync YouTube's internal player UI state with the actual <video> paused/playing state
+                        var player = document.getElementById('movie_player');
+                        if (player) {
+                            if (v.paused && typeof player.pauseVideo === 'function') {
+                                window.__gsUserPaused = true;
+                                player.pauseVideo();
+                            } else if (!v.paused && typeof player.playVideo === 'function') {
+                                window.__gsUserPaused = false;
+                                player.playVideo();
+                            }
+                        }
+                    }
+
+                    // Trigger layout & player UI recalculation so YouTube fullscreen controls (play/pause, seekbar) respond immediately
                     window.dispatchEvent(new Event('resize'));
+                    setTimeout(function() {
+                        window.dispatchEvent(new Event('resize'));
+                    }, 150);
+                    setTimeout(function() {
+                        window.dispatchEvent(new Event('resize'));
+                    }, 400);
                 })();
             """.trimIndent()
             webView.evaluateJavascript(js, null)
@@ -367,8 +401,13 @@ class MainActivity : Activity() {
             webView.onResume()
             webView.resumeTimers()
         } else {
-            webView.evaluateJavascript("window.__gsPipActive = false;", null)
+            // Reset PiP flags FIRST so normal fullscreen/inline YouTube buttons can call pause()/play() freely
+            webView.evaluateJavascript("window.__gsPipActive = false; window.__gsUserPaused = false;", null)
             applyPipLayout(false)
+            webView.onResume()
+            webView.resumeTimers()
+            webView.requestLayout()
+            customView?.requestLayout()
             if (customView == null) {
                 showDefaultFabs()
             }
@@ -425,15 +464,16 @@ class MainActivity : Activity() {
 
     private fun injectCoreProtectionScript() {
         val hasPlaylist = (currentPlaylistId != null && currentVideoIndex >= 0)
+        val isPipNow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) isInPictureInPictureMode else false
         val js = """
             (function() {
                 window.__gsRepeatEnabled = $isRepeatEnabled;
                 window.__gsAutoNextEnabled = $isAutoNextEnabled;
                 window.__gsHasPlaylist = $hasPlaylist;
+                window.__gsPipActive = $isPipNow;
 
                 if (!window.__gsHookInstalled) {
                     window.__gsHookInstalled = true;
-                    window.__gsPipActive = false;
                     window.__gsUserPaused = false;
 
                     try {
@@ -443,7 +483,8 @@ class MainActivity : Activity() {
 
                     const origPause = HTMLMediaElement.prototype.pause;
                     HTMLMediaElement.prototype.pause = function() {
-                        if (window.__gsPipActive && !window.__gsUserPaused) {
+                        // Only block automatic background pauses when actually in PiP mode and not requested by user
+                        if (window.__gsPipActive === true && window.__gsUserPaused !== true) {
                             return;
                         }
                         return origPause.apply(this, arguments);
@@ -516,6 +557,7 @@ class MainActivity : Activity() {
                             });
 
                             video.addEventListener('play', function() {
+                                window.__gsUserPaused = false;
                                 if (window.AndroidBridge) window.AndroidBridge.onPlaybackStateChanged(true);
                             });
 
@@ -721,6 +763,9 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !isInPictureInPictureMode) {
+            webView.evaluateJavascript("window.__gsPipActive = false; window.__gsUserPaused = false;", null)
+        }
         webView.onResume()
         webView.resumeTimers()
     }
