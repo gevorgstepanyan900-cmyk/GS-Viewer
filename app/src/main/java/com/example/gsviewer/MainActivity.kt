@@ -210,12 +210,20 @@ class MainActivity : Activity() {
     private var isVideoPlaying: Boolean = true
     private var wasInPip: Boolean = false
 
+    // Guard: switching between full and mini mode must never pause a playing video.
+    // If the page pauses by itself right after a mode switch (not by the user), resume it.
+    private var keepPlayingUntil: Long = 0L
+    private var userToggleAt: Long = 0L
+
     private val pipReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ACTION_MEDIA_CONTROL) return
             when (intent.getIntExtra(EXTRA_CONTROL_TYPE, 0)) {
-                CONTROL_TYPE_PLAY_PAUSE ->
+                CONTROL_TYPE_PLAY_PAUSE -> {
+                    userToggleAt = System.currentTimeMillis()
+                    keepPlayingUntil = 0L
                     webView.evaluateJavascript("(window.__gsToggle || function(){})();", null)
+                }
                 CONTROL_TYPE_REWIND ->
                     webView.evaluateJavascript("(window.__gsSeek || function(){})(-10);", null)
                 CONTROL_TYPE_FORWARD ->
@@ -337,7 +345,11 @@ class MainActivity : Activity() {
         })
 
         // Play/pause in full mode: same toggle and same state as the PiP window's button.
-        playPauseButton = makeFab("⏸") { webView.evaluateJavascript("(window.__gsToggle || function(){})();", null) }
+        playPauseButton = makeFab("⏸") {
+            userToggleAt = System.currentTimeMillis()
+            keepPlayingUntil = 0L
+            webView.evaluateJavascript("(window.__gsToggle || function(){})();", null)
+        }
         rootFrame.addView(playPauseButton, FrameLayout.LayoutParams(
             (48 * resources.displayMetrics.density).toInt(),
             (48 * resources.displayMetrics.density).toInt(),
@@ -384,9 +396,14 @@ class MainActivity : Activity() {
         updateSaveButton(webView.url)
     }
 
+    private fun armKeepPlayingGuard() {
+        if (isVideoPlaying) keepPlayingUntil = System.currentTimeMillis() + 3000L
+    }
+
     private fun enterPipMode() {
         if (isInPictureInPictureMode) return
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+        armKeepPlayingGuard()
         isPipModeActive = true
         applyPipLayout(true)
 
@@ -530,6 +547,7 @@ class MainActivity : Activity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration?) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isPipModeActive = isInPictureInPictureMode
+        armKeepPlayingGuard()
         if (isInPictureInPictureMode) {
             wasInPip = true
             hideAllFabs()
@@ -710,6 +728,11 @@ class MainActivity : Activity() {
 
     /** Single entry point for any playback-state change coming from the page. */
     private fun applyPlaybackState(playing: Boolean) {
+        if (!playing && System.currentTimeMillis() < keepPlayingUntil) {
+            // Unrequested pause caused by the mode switch: undo it, keep the UI as "playing".
+            webView.evaluateJavascript("(window.__gsPlay || function(){})();", null)
+            return
+        }
         isVideoPlaying = playing
         updatePlayPauseButton()
         updatePipActions()
