@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var repeatButton: TextView
     private lateinit var autoNextButton: TextView
     private lateinit var pipButton: TextView
+    private lateinit var playPauseButton: TextView
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var customView: View? = null
@@ -101,22 +102,46 @@ class MainActivity : Activity() {
         }
     };
 
-    window.__gsToggle = function() {
+    function ytPlayer() {
+        var p = document.getElementById('movie_player');
+        return (p && typeof p.playVideo === 'function' && typeof p.pauseVideo === 'function') ? p : null;
+    }
+
+    // Play/pause through YouTube's own player first (keeps its UI/state machine consistent),
+    // then verify on the <video> element and force it if YouTube did not react.
+    window.__gsPlay = function() {
         var v = window.__gsVideo();
-        if (!v) return;
-        if (v.paused || v.ended) {
+        var p = ytPlayer();
+        try { if (p) p.playVideo(); } catch (e) {}
+        if (v) {
             var pr = v.play();
-            if (pr && pr.then) pr.then(function() { window.__gsReport(true); }, function() { window.__gsReport(true); });
-        } else {
-            v.pause();
+            if (pr && pr.catch) pr.catch(function() {});
         }
         window.__gsReport(true);
+        setTimeout(function() {
+            var vv = window.__gsVideo();
+            if (vv && vv.paused) { var q = vv.play(); if (q && q.catch) q.catch(function() {}); }
+            window.__gsReport(true);
+        }, 250);
     };
 
     window.__gsPause = function() {
         var v = window.__gsVideo();
+        var p = ytPlayer();
+        try { if (p) p.pauseVideo(); } catch (e) {}
         if (v && !v.paused) v.pause();
         window.__gsReport(true);
+        setTimeout(function() {
+            var vv = window.__gsVideo();
+            if (vv && !vv.paused) vv.pause();
+            window.__gsReport(true);
+        }, 250);
+    };
+
+    window.__gsToggle = function() {
+        var v = window.__gsVideo();
+        if (!v) return;
+        if (v.paused || v.ended) window.__gsPlay(); else window.__gsPause();
     };
 
     window.__gsSeek = function(delta) {
@@ -311,6 +336,18 @@ class MainActivity : Activity() {
             rightMargin = m
         })
 
+        // Play/pause in full mode: same toggle and same state as the PiP window's button.
+        playPauseButton = makeFab("⏸") { webView.evaluateJavascript("(window.__gsToggle || function(){})();", null) }
+        rootFrame.addView(playPauseButton, FrameLayout.LayoutParams(
+            (48 * resources.displayMetrics.density).toInt(),
+            (48 * resources.displayMetrics.density).toInt(),
+            Gravity.TOP or Gravity.START
+        ).apply {
+            val m = (16 * resources.displayMetrics.density).toInt()
+            topMargin = m
+            leftMargin = m
+        })
+
         setContentView(rootFrame)
 
         if (savedInstanceState != null) {
@@ -335,12 +372,14 @@ class MainActivity : Activity() {
         repeatButton.visibility = View.GONE
         autoNextButton.visibility = View.GONE
         pipButton.visibility = View.GONE
+        playPauseButton.visibility = View.GONE
     }
 
     private fun showDefaultFabs() {
         playlistButton.visibility = View.VISIBLE
         repeatButton.visibility = View.VISIBLE
         pipButton.visibility = View.VISIBLE
+        updatePlayPauseButton()
         updateAutoNextButtonVisibility()
         updateSaveButton(webView.url)
     }
@@ -374,8 +413,7 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(
             "(function(){try{var v=window.__gsVideo&&window.__gsVideo();return !!(v&&!v.paused&&!v.ended);}catch(e){return false;}})()"
         ) { result ->
-            isVideoPlaying = (result == "true")
-            updatePipActions()
+            applyPlaybackState(result == "true")
         }
     }
 
@@ -509,6 +547,7 @@ class MainActivity : Activity() {
             }
             // Keep the full-mode UI in sync with whatever happened in the mini window.
             webView.evaluateJavascript("(window.__gsReport || function(){})(true);", null)
+            webView.postDelayed({ syncPlaybackStateFromPage() }, 400)
         }
     }
 
@@ -593,10 +632,7 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun onPlaybackStateChanged(playing: Boolean) {
             runOnUiThread {
-                if (isVideoPlaying != playing) {
-                    isVideoPlaying = playing
-                    updatePipActions()
-                }
+                applyPlaybackState(playing)
             }
         }
     }
@@ -660,7 +696,23 @@ class MainActivity : Activity() {
         val id = YoutubeHelper.extractVideoId(url)
         if (customView == null && !isPipModeActive) {
             saveButton.visibility = if (id != null) View.VISIBLE else View.INVISIBLE
+            playPauseButton.visibility = if (id != null) View.VISIBLE else View.GONE
         }
+    }
+
+    private fun updatePlayPauseButton() {
+        playPauseButton.text = if (isVideoPlaying) "⏸" else "▶"
+        if (customView == null && !isPipModeActive) {
+            playPauseButton.visibility =
+                if (YoutubeHelper.extractVideoId(webView.url) != null) View.VISIBLE else View.GONE
+        }
+    }
+
+    /** Single entry point for any playback-state change coming from the page. */
+    private fun applyPlaybackState(playing: Boolean) {
+        isVideoPlaying = playing
+        updatePlayPauseButton()
+        updatePipActions()
     }
 
     private fun showPlaylistSelectionDialog() {
@@ -757,11 +809,10 @@ class MainActivity : Activity() {
     override fun onStop() {
         super.onStop()
         if (wasInPip && !isInPictureInPictureMode) {
-            // The mini window was closed with "X": stop the video, as YouTube does,
-            // and keep the state flags consistent.
+            // The mini window was closed: only reset the flags (never touch playback here,
+            // some devices call onStop while the window is being expanded).
             isPipModeActive = false
             wasInPip = false
-            webView.evaluateJavascript("(window.__gsPause || function(){})();", null)
         } else if (isPipModeActive) {
             webView.onResume()
             webView.resumeTimers()
