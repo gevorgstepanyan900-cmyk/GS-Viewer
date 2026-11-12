@@ -293,8 +293,7 @@ class MainActivity : Activity() {
     }
 
     private fun prepareVideoForPip() {
-        // Override Page Visibility API so YouTube thinks page is ALWAYS visible and active,
-        // hide clutter overlays, and keep video playing continuously without auto-pausing.
+        // Fix sizing and ensure video fills PiP container cleanly without cropping or collapsing.
         val js = "(function() {" +
                 "window.gsInPip = true;" +
                 "window.gsUserPaused = false;" +
@@ -307,8 +306,9 @@ class MainActivity : Activity() {
                 "  style = document.createElement('style');" +
                 "  style.id = 'gs-pip-style';" +
                 "  style.innerHTML = '" +
-                "    body, html { overflow: hidden !important; background: #000 !important; } " +
-                "    video { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 2147483647 !important; background: #000 !important; object-fit: contain !important; } " +
+                "    body, html { width: 100% !important; height: 100% !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; background: #000 !important; } " +
+                "    video { width: 100% !important; height: 100% !important; max-width: none !important; max-height: none !important; object-fit: contain !important; background: #000 !important; position: static !important; } " +
+                "    .html5-video-player, .html5-video-container { width: 100% !important; height: 100% !important; background: #000 !important; } " +
                 "    .ytp-chrome-top, .ytp-chrome-bottom, .mobile-topbar-header, ytm-mobile-topbar-renderer, .player-controls-content, .player-controls-top, .player-controls-bottom, ytm-pivot-bar-renderer { display: none !important; opacity: 0 !important; pointer-events: none !important; } " +
                 "  ';" +
                 "  document.head.appendChild(style);" +
@@ -316,7 +316,7 @@ class MainActivity : Activity() {
                 "var v = document.querySelector('video');" +
                 "if (v) {" +
                 "  v.muted = false;" +
-                "  v.play();" +
+                "  v.play().catch(function(){});" +
                 "}" +
                 "})();"
         webView.evaluateJavascript(js, null)
@@ -429,7 +429,7 @@ class MainActivity : Activity() {
                 "      });" +
                 "      video.addEventListener('pause', function() {" +
                 "        if (window.gsInPip && !window.gsUserPaused && !video.ended) {" +
-                "          setTimeout(function() { if (window.gsInPip && !window.gsUserPaused && video.paused) { video.play().catch(function(){}); } }, 50);" +
+                "          setTimeout(function() { if (window.gsInPip && !window.gsUserPaused && video.paused) { video.play().catch(function(){}); } }, 30);" +
                 "        } else {" +
                 "          if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(false); }" +
                 "        }" +
@@ -440,7 +440,7 @@ class MainActivity : Activity() {
                 "applySettings();" +
                 "if (!window.gsIntervalSet) {" +
                 "  window.gsIntervalSet = true;" +
-                "  setInterval(applySettings, 300);" +
+                "  setInterval(applySettings, 200);" +
                 "}" +
                 "})();"
         webView.evaluateJavascript(js, null)
