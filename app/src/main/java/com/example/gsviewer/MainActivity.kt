@@ -49,6 +49,7 @@ class MainActivity : Activity() {
     private var currentPlaylistId: String? = null
     private var currentVideoIndex: Int = -1
     private var isVideoPlaying: Boolean = true
+    private var userRequestedPause: Boolean = false
 
     companion object {
         private const val ACTION_MEDIA_CONTROL = "com.example.gsviewer.MEDIA_CONTROL"
@@ -64,7 +65,18 @@ class MainActivity : Activity() {
             when (intent.getIntExtra(EXTRA_CONTROL_TYPE, 0)) {
                 CONTROL_TYPE_PLAY_PAUSE -> {
                     webView.evaluateJavascript(
-                        "(function() { var v = document.querySelector('video'); if (v) { if (v.paused) v.play(); else v.pause(); } })();",
+                        "(function() { " +
+                        "var v = document.querySelector('video'); " +
+                        "if (v) { " +
+                        "  if (v.paused) { " +
+                        "    window.gsUserPaused = false; " +
+                        "    v.play(); " +
+                        "  } else { " +
+                        "    window.gsUserPaused = true; " +
+                        "    v.pause(); " +
+                        "  } " +
+                        "} " +
+                        "})();",
                         null
                     )
                 }
@@ -274,26 +286,37 @@ class MainActivity : Activity() {
 
     private fun enterPipMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            userRequestedPause = false
             prepareVideoForPip()
             enterPictureInPictureMode(buildPipParams())
         }
     }
 
     private fun prepareVideoForPip() {
-        // Fit the HTML5 video cleanly over the viewport so it fills the PiP window properly and stays playing
+        // Override Page Visibility API so YouTube thinks page is ALWAYS visible and active,
+        // hide clutter overlays, and keep video playing continuously without auto-pausing.
         val js = "(function() {" +
+                "window.gsInPip = true;" +
+                "window.gsUserPaused = false;" +
+                "try {" +
+                "  Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });" +
+                "  Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });" +
+                "} catch(e) {}" +
+                "var style = document.getElementById('gs-pip-style');" +
+                "if (!style) {" +
+                "  style = document.createElement('style');" +
+                "  style.id = 'gs-pip-style';" +
+                "  style.innerHTML = '" +
+                "    body, html { overflow: hidden !important; background: #000 !important; } " +
+                "    video { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 2147483647 !important; background: #000 !important; object-fit: contain !important; } " +
+                "    .ytp-chrome-top, .ytp-chrome-bottom, .mobile-topbar-header, ytm-mobile-topbar-renderer, .player-controls-content, .player-controls-top, .player-controls-bottom, ytm-pivot-bar-renderer { display: none !important; opacity: 0 !important; pointer-events: none !important; } " +
+                "  ';" +
+                "  document.head.appendChild(style);" +
+                "}" +
                 "var v = document.querySelector('video');" +
                 "if (v) {" +
-                "v.muted = false;" +
-                "v.play();" +
-                "v.style.position = 'fixed';" +
-                "v.style.top = '0';" +
-                "v.style.left = '0';" +
-                "v.style.width = '100vw';" +
-                "v.style.height = '100vh';" +
-                "v.style.zIndex = '999999';" +
-                "v.style.backgroundColor = 'black';" +
-                "v.style.objectFit = 'contain';" +
+                "  v.muted = false;" +
+                "  v.play();" +
                 "}" +
                 "})();"
         webView.evaluateJavascript(js, null)
@@ -301,17 +324,9 @@ class MainActivity : Activity() {
 
     private fun restoreVideoFromPip() {
         val js = "(function() {" +
-                "var v = document.querySelector('video');" +
-                "if (v) {" +
-                "v.style.position = '';" +
-                "v.style.top = '';" +
-                "v.style.left = '';" +
-                "v.style.width = '';" +
-                "v.style.height = '';" +
-                "v.style.zIndex = '';" +
-                "v.style.backgroundColor = '';" +
-                "v.style.objectFit = '';" +
-                "}" +
+                "window.gsInPip = false;" +
+                "var style = document.getElementById('gs-pip-style');" +
+                "if (style) { style.remove(); }" +
                 "})();"
         webView.evaluateJavascript(js, null)
     }
@@ -321,6 +336,7 @@ class MainActivity : Activity() {
         val id = YoutubeHelper.extractVideoId(webView.url)
         if (id != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && customView == null) {
             try {
+                userRequestedPause = false
                 prepareVideoForPip()
                 enterPictureInPictureMode(buildPipParams())
             } catch (e: Exception) {
@@ -338,10 +354,8 @@ class MainActivity : Activity() {
             autoNextButton.visibility = View.GONE
             pipButton.visibility = View.GONE
             prepareVideoForPip()
-            // Force resume playback right after entering PiP
-            webView.postDelayed({
-                webView.evaluateJavascript("var v = document.querySelector('video'); if (v && v.paused) { v.play(); }", null)
-            }, 250)
+            webView.onResume()
+            webView.resumeTimers()
         } else {
             restoreVideoFromPip()
             playlistButton.visibility = View.VISIBLE
@@ -391,30 +405,42 @@ class MainActivity : Activity() {
 
     private fun injectAudioAndVideoListeners() {
         val js = "(function() {" +
+                "try {" +
+                "  Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });" +
+                "  Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });" +
+                "} catch(e) {}" +
                 "function applySettings() {" +
-                "var videos = document.querySelectorAll('video');" +
-                "videos.forEach(function(video) {" +
-                "video.muted = false;" +
-                "video.volume = 1.0;" +
-                "if (" + isRepeatEnabled + ") { video.loop = true; } else { video.loop = false; }" +
-                "if (!video.hasAttribute('data-ended-listener')) {" +
-                "video.setAttribute('data-ended-listener', 'true');" +
-                "video.addEventListener('ended', function() {" +
-                "if (window.AndroidBridge) { window.AndroidBridge.onVideoEnded(); }" +
-                "});" +
-                "video.addEventListener('play', function() {" +
-                "if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(true); }" +
-                "});" +
-                "video.addEventListener('pause', function() {" +
-                "if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(false); }" +
-                "});" +
-                "}" +
-                "});" +
+                "  var videos = document.querySelectorAll('video');" +
+                "  videos.forEach(function(video) {" +
+                "    video.muted = false;" +
+                "    video.volume = 1.0;" +
+                "    if (" + isRepeatEnabled + ") { video.loop = true; } else { video.loop = false; }" +
+                "    if (window.gsInPip && !window.gsUserPaused && video.paused && !video.ended && video.readyState >= 2) {" +
+                "      video.play().catch(function(){});" +
+                "    }" +
+                "    if (!video.hasAttribute('data-ended-listener')) {" +
+                "      video.setAttribute('data-ended-listener', 'true');" +
+                "      video.addEventListener('ended', function() {" +
+                "        if (window.AndroidBridge) { window.AndroidBridge.onVideoEnded(); }" +
+                "      });" +
+                "      video.addEventListener('play', function() {" +
+                "        window.gsUserPaused = false;" +
+                "        if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(true); }" +
+                "      });" +
+                "      video.addEventListener('pause', function() {" +
+                "        if (window.gsInPip && !window.gsUserPaused && !video.ended) {" +
+                "          setTimeout(function() { if (window.gsInPip && !window.gsUserPaused && video.paused) { video.play().catch(function(){}); } }, 50);" +
+                "        } else {" +
+                "          if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(false); }" +
+                "        }" +
+                "      });" +
+                "    }" +
+                "  });" +
                 "}" +
                 "applySettings();" +
                 "if (!window.gsIntervalSet) {" +
-                "window.gsIntervalSet = true;" +
-                "setInterval(applySettings, 500);" +
+                "  window.gsIntervalSet = true;" +
+                "  setInterval(applySettings, 300);" +
                 "}" +
                 "})();"
         webView.evaluateJavascript(js, null)
@@ -579,16 +605,26 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        // CRITICAL: Do NOT call webView.onPause() while in Picture-in-Picture mode, otherwise playback freezes!
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+            webView.onResume()
+            webView.resumeTimers()
             return
         }
         webView.onPause()
     }
 
+    override fun onStop() {
+        super.onStop()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+            webView.onResume()
+            webView.resumeTimers()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         webView.onResume()
+        webView.resumeTimers()
     }
 
     override fun onDestroy() {
