@@ -149,11 +149,19 @@ class MainActivity : Activity() {
                 super.doUpdateVisitedHistory(view, url, isReload)
                 updateSaveButton(url)
                 injectCoreProtectionScript()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+                    applyPipLayout(true)
+                    webView.evaluateJavascript("window.__gsPipActive = true; window.__gsUserPaused = false;", null)
+                }
             }
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 updateSaveButton(url)
                 injectCoreProtectionScript()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+                    applyPipLayout(true)
+                    webView.evaluateJavascript("window.__gsPipActive = true; window.__gsUserPaused = false; var v = document.querySelector('video'); if(v && v.paused) v.play();", null)
+                }
             }
         }
 
@@ -176,7 +184,7 @@ class MainActivity : Activity() {
             updateFabColor(repeatButton, isRepeatEnabled)
             val stateText = if (isRepeatEnabled) "Կրկնությունը ՄԻԱՑՎԱԾ Է" else "Կրկնությունը ԱՆՋԱՏՎԱԾ Է"
             Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
-            injectLoopScript()
+            syncRepeatStateToJs()
         }
         rootFrame.addView(repeatButton, fabParams(Gravity.BOTTOM or Gravity.END, 80))
 
@@ -185,6 +193,7 @@ class MainActivity : Activity() {
             updateFabColor(autoNextButton, isAutoNextEnabled)
             val stateText = if (isAutoNextEnabled) "Ավտո-հաջորդը ՄԻԱՑՎԱԾ Է" else "Ավտո-հաջորդը ԱՆՋԱՏՎԱԾ Է"
             Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
+            syncAutoNextStateToJs()
         }
         autoNextButton.visibility = View.GONE
         rootFrame.addView(autoNextButton, fabParams(Gravity.BOTTOM or Gravity.START, 80))
@@ -369,10 +378,17 @@ class MainActivity : Activity() {
     private fun handleIntent(intent: Intent?) {
         if (intent == null) return
         val openUrl = intent.getStringExtra("open_url")
-        currentPlaylistId = intent.getStringExtra("playlist_id")
-        currentVideoIndex = intent.getIntExtra("video_index", -1)
+        if (intent.hasExtra("playlist_id")) {
+            currentPlaylistId = intent.getStringExtra("playlist_id")
+            currentVideoIndex = intent.getIntExtra("video_index", -1)
+            if (currentPlaylistId != null && currentVideoIndex >= 0 && !isRepeatEnabled) {
+                isAutoNextEnabled = true
+                updateFabColor(autoNextButton, true)
+            }
+        }
 
         updateAutoNextButtonVisibility()
+        syncAutoNextStateToJs()
 
         when {
             openUrl != null -> webView.loadUrl(openUrl)
@@ -388,14 +404,33 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun injectLoopScript() {
-        val loopJs = "var videos = document.querySelectorAll('video'); videos.forEach(function(v) { v.loop = $isRepeatEnabled; });"
-        webView.evaluateJavascript(loopJs, null)
+    private fun syncRepeatStateToJs() {
+        val js = """
+            window.__gsRepeatEnabled = $isRepeatEnabled;
+            document.querySelectorAll('video').forEach(function(v) {
+                v.loop = $isRepeatEnabled;
+            });
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    private fun syncAutoNextStateToJs() {
+        val hasPlaylist = (currentPlaylistId != null && currentVideoIndex >= 0)
+        val js = """
+            window.__gsAutoNextEnabled = $isAutoNextEnabled;
+            window.__gsHasPlaylist = $hasPlaylist;
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
     }
 
     private fun injectCoreProtectionScript() {
+        val hasPlaylist = (currentPlaylistId != null && currentVideoIndex >= 0)
         val js = """
             (function() {
+                window.__gsRepeatEnabled = $isRepeatEnabled;
+                window.__gsAutoNextEnabled = $isAutoNextEnabled;
+                window.__gsHasPlaylist = $hasPlaylist;
+
                 if (!window.__gsHookInstalled) {
                     window.__gsHookInstalled = true;
                     window.__gsPipActive = false;
@@ -421,22 +456,74 @@ class MainActivity : Activity() {
                     };
                 }
 
+                function handleVideoCompletion(video) {
+                    if (window.__gsRepeatEnabled) {
+                        video.currentTime = 0;
+                        window.__gsUserPaused = false;
+                        video.play().catch(function(){});
+                    } else if (window.__gsAutoNextEnabled && window.__gsHasPlaylist) {
+                        if (window.AndroidBridge) {
+                            window.AndroidBridge.onVideoEnded();
+                        }
+                    }
+                }
+
                 function setupVideos() {
                     var videos = document.querySelectorAll('video');
                     videos.forEach(function(video) {
                         if (video.muted) video.muted = false;
                         if (video.volume < 1.0) video.volume = 1.0;
-                        video.loop = $isRepeatEnabled;
+
+                        video.loop = !!window.__gsRepeatEnabled;
+
+                        if (video.duration > 1 && !isNaN(video.duration)) {
+                            var remaining = video.duration - video.currentTime;
+                            if (remaining <= 0.35 && remaining >= 0) {
+                                if (window.__gsRepeatEnabled) {
+                                    video.currentTime = 0;
+                                    window.__gsUserPaused = false;
+                                    video.play().catch(function(){});
+                                } else if (window.__gsAutoNextEnabled && window.__gsHasPlaylist && !video.__gsNextSent) {
+                                    video.__gsNextSent = true;
+                                    if (window.AndroidBridge) window.AndroidBridge.onVideoEnded();
+                                }
+                            } else if (remaining > 2.0) {
+                                video.__gsNextSent = false;
+                            }
+                        }
 
                         if (!video.hasAttribute('data-gs-bound')) {
                             video.setAttribute('data-gs-bound', 'true');
+                            video.__gsNextSent = false;
+
                             video.addEventListener('ended', function() {
-                                if (window.AndroidBridge) window.AndroidBridge.onVideoEnded();
+                                if (window.__gsRepeatEnabled) {
+                                    video.currentTime = 0;
+                                    window.__gsUserPaused = false;
+                                    video.play().catch(function(){});
+                                } else if (window.__gsAutoNextEnabled && window.__gsHasPlaylist && !video.__gsNextSent) {
+                                    video.__gsNextSent = true;
+                                    if (window.AndroidBridge) window.AndroidBridge.onVideoEnded();
+                                }
                             });
+
+                            video.addEventListener('timeupdate', function() {
+                                if (window.__gsRepeatEnabled && video.duration > 1 && (video.duration - video.currentTime) <= 0.3) {
+                                    video.currentTime = 0;
+                                    window.__gsUserPaused = false;
+                                    video.play().catch(function(){});
+                                }
+                            });
+
                             video.addEventListener('play', function() {
                                 if (window.AndroidBridge) window.AndroidBridge.onPlaybackStateChanged(true);
                             });
+
                             video.addEventListener('pause', function() {
+                                if (video.duration > 1 && (video.duration - video.currentTime) <= 0.5) {
+                                    handleVideoCompletion(video);
+                                    return;
+                                }
                                 if (window.AndroidBridge) window.AndroidBridge.onPlaybackStateChanged(false);
                             });
                         }
@@ -445,7 +532,7 @@ class MainActivity : Activity() {
 
                 setupVideos();
                 if (!window.__gsScanner) {
-                    window.__gsScanner = setInterval(setupVideos, 1000);
+                    window.__gsScanner = setInterval(setupVideos, 300);
                 }
             })();
         """.trimIndent()
@@ -457,7 +544,7 @@ class MainActivity : Activity() {
         fun onVideoEnded() {
             runOnUiThread {
                 if (isRepeatEnabled) {
-                    webView.evaluateJavascript("var v = document.querySelector('video'); if(v){ v.currentTime = 0; v.play(); }", null)
+                    webView.evaluateJavascript("var v = document.querySelector('video'); if(v){ v.currentTime = 0; window.__gsUserPaused = false; v.play(); }", null)
                 } else if (isAutoNextEnabled && currentPlaylistId != null && currentVideoIndex >= 0) {
                     playNextVideoInPlaylist()
                 }
@@ -485,9 +572,13 @@ class MainActivity : Activity() {
             currentVideoIndex = nextIndex
             val nextVideo = videos[nextIndex]
             webView.loadUrl(nextVideo.url)
-            Toast.makeText(this, "Հաջորդ տեսանյութը: ${nextVideo.title}", Toast.LENGTH_SHORT).show()
+            if (!isInPictureInPictureMode) {
+                Toast.makeText(this, "Հաջորդ տեսանյութը: ${nextVideo.title}", Toast.LENGTH_SHORT).show()
+            }
         } else {
-            Toast.makeText(this, "Փլեյլիստի վերջին տեսանյութն ավարտվեց", Toast.LENGTH_SHORT).show()
+            if (!isInPictureInPictureMode) {
+                Toast.makeText(this, "Փլեյլիստի վերջին տեսանյութն ավարտվեց", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
