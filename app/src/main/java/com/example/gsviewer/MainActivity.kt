@@ -10,6 +10,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -29,6 +30,8 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -41,7 +44,7 @@ class MainActivity : Activity() {
     private lateinit var autoNextButton: TextView
     private lateinit var pipButton: TextView
 
-    private val scope = CoroutineScope(Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private lateinit var rootFrame: FrameLayout
@@ -62,35 +65,136 @@ class MainActivity : Activity() {
         private const val CONTROL_TYPE_PLAY_PAUSE = 1
         private const val CONTROL_TYPE_REWIND = 2
         private const val CONTROL_TYPE_FORWARD = 3
+
+        // Single source of truth for page-side logic. Installed once per document;
+        // later injections only refresh state (see injectCoreProtectionScript).
+        private const val CORE_JS = """
+(function() {
+    if (window.__gsCoreInstalled) { if (window.__gsScan) window.__gsScan(); return; }
+    window.__gsCoreInstalled = true;
+
+    try {
+        Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
+        Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+    } catch (e) {}
+
+    // The main video: playing one first, otherwise the biggest one.
+    window.__gsVideo = function() {
+        var vs = document.querySelectorAll('video');
+        var best = null, bestScore = -1;
+        for (var i = 0; i < vs.length; i++) {
+            var r = vs[i].getBoundingClientRect();
+            var score = r.width * r.height + (vs[i].paused ? 0 : 1e9);
+            if (score > bestScore) { bestScore = score; best = vs[i]; }
+        }
+        return best;
+    };
+
+    window.__gsIsPlaying = function(v) { return !!v && !v.paused && !v.ended; };
+
+    // Push the REAL playback state to Android (only when it changed, or when forced).
+    window.__gsReport = function(force) {
+        var p = window.__gsIsPlaying(window.__gsVideo());
+        if (force || window.__gsLastPlaying !== p) {
+            window.__gsLastPlaying = p;
+            if (window.AndroidBridge) window.AndroidBridge.onPlaybackStateChanged(p);
+        }
+    };
+
+    window.__gsToggle = function() {
+        var v = window.__gsVideo();
+        if (!v) return;
+        if (v.paused || v.ended) {
+            var pr = v.play();
+            if (pr && pr.then) pr.then(function() { window.__gsReport(true); }, function() { window.__gsReport(true); });
+        } else {
+            v.pause();
+        }
+        window.__gsReport(true);
+    };
+
+    window.__gsPause = function() {
+        var v = window.__gsVideo();
+        if (v && !v.paused) v.pause();
+        window.__gsReport(true);
+    };
+
+    window.__gsSeek = function(delta) {
+        var v = window.__gsVideo();
+        if (!v) return;
+        var t = v.currentTime + delta;
+        if (t < 0) t = 0;
+        if (v.duration && t > v.duration) t = v.duration;
+        v.currentTime = t;
+    };
+
+    window.__gsRestart = function() {
+        var v = window.__gsVideo();
+        if (!v) return;
+        v.currentTime = 0;
+        var pr = v.play();
+        if (pr && pr.catch) pr.catch(function() {});
+    };
+
+    function notifyEnded(video) {
+        if (window.__gsRepeatEnabled) {
+            window.__gsRestart();
+        } else if (window.__gsAutoNextEnabled && window.__gsHasPlaylist && !video.__gsNextSent) {
+            video.__gsNextSent = true;
+            if (window.AndroidBridge) window.AndroidBridge.onVideoEnded();
+        }
+    }
+
+    function bind(video) {
+        video.setAttribute('data-gs-bound', 'true');
+        video.__gsNextSent = false;
+        video.addEventListener('ended', function() { notifyEnded(video); window.__gsReport(false); });
+        ['play', 'playing', 'pause', 'emptied', 'abort'].forEach(function(ev) {
+            video.addEventListener(ev, function() { window.__gsReport(false); });
+        });
+    }
+
+    window.__gsScan = function() {
+        var videos = document.querySelectorAll('video');
+        for (var i = 0; i < videos.length; i++) {
+            var video = videos[i];
+            if (!video.hasAttribute('data-gs-bound')) bind(video);
+            if (video.muted) video.muted = false;
+            if (video.volume < 1.0) video.volume = 1.0;
+            video.loop = !!window.__gsRepeatEnabled;
+
+            // Fallback for the end of the video (YouTube sometimes skips 'ended').
+            if (video.duration > 1 && !isNaN(video.duration) && !video.paused) {
+                var remaining = video.duration - video.currentTime;
+                if (remaining <= 0.35 && remaining >= 0) {
+                    if (!window.__gsRepeatEnabled) notifyEnded(video);
+                } else if (remaining > 2.0) {
+                    video.__gsNextSent = false;
+                }
+            }
+        }
+        window.__gsReport(false);
+    };
+
+    window.__gsScanner = setInterval(window.__gsScan, 300);
+    window.__gsScan();
+})();
+"""
     }
 
     private var isVideoPlaying: Boolean = true
+    private var wasInPip: Boolean = false
 
     private val pipReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ACTION_MEDIA_CONTROL) return
             when (intent.getIntExtra(EXTRA_CONTROL_TYPE, 0)) {
-                CONTROL_TYPE_PLAY_PAUSE -> {
-                    webView.evaluateJavascript(
-                        """
-                        (function() {
-                            var v = document.querySelector('video');
-                            if (!v) return;
-                            if (v.paused) {
-                                v.play();
-                            } else {
-                                v.pause();
-                            }
-                        })();
-                        """.trimIndent(), null
-                    )
-                }
-                CONTROL_TYPE_REWIND -> {
-                    webView.evaluateJavascript("var v = document.querySelector('video'); if(v) v.currentTime = Math.max(0, v.currentTime - 10);", null)
-                }
-                CONTROL_TYPE_FORWARD -> {
-                    webView.evaluateJavascript("var v = document.querySelector('video'); if(v) v.currentTime += 10;", null)
-                }
+                CONTROL_TYPE_PLAY_PAUSE ->
+                    webView.evaluateJavascript("(window.__gsToggle || function(){})();", null)
+                CONTROL_TYPE_REWIND ->
+                    webView.evaluateJavascript("(window.__gsSeek || function(){})(-10);", null)
+                CONTROL_TYPE_FORWARD ->
+                    webView.evaluateJavascript("(window.__gsSeek || function(){})(10);", null)
             }
         }
     }
@@ -146,9 +250,14 @@ class MainActivity : Activity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                injectCoreProtectionScript()
+            }
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                 super.doUpdateVisitedHistory(view, url, isReload)
                 updateSaveButton(url)
+                syncPlaylistPositionWithUrl(url)
                 injectCoreProtectionScript()
             }
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -204,9 +313,18 @@ class MainActivity : Activity() {
 
         setContentView(rootFrame)
 
-        handleIntent(intent)
-        if (savedInstanceState != null && intent.getStringExtra("open_url") == null) {
+        if (savedInstanceState != null) {
+            currentPlaylistId = savedInstanceState.getString("gs_playlist_id")
+            currentVideoIndex = savedInstanceState.getInt("gs_video_index", -1)
+            isRepeatEnabled = savedInstanceState.getBoolean("gs_repeat", false)
+            isAutoNextEnabled = savedInstanceState.getBoolean("gs_autonext", false)
+            updateFabColor(repeatButton, isRepeatEnabled)
+            updateFabColor(autoNextButton, isAutoNextEnabled)
             webView.restoreState(savedInstanceState)
+            updateAutoNextButtonVisibility()
+            if (webView.url == null) handleIntent(intent)
+        } else {
+            handleIntent(intent)
         }
         updateSaveButton(webView.url)
     }
@@ -228,15 +346,36 @@ class MainActivity : Activity() {
     }
 
     private fun enterPipMode() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            isPipModeActive = true
-            applyPipLayout(true)
+        if (isInPictureInPictureMode) return
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+        isPipModeActive = true
+        applyPipLayout(true)
 
-            val params = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-                .setActions(buildPipActions())
-                .build()
+        val params = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+            .setActions(buildPipActions())
+            .build()
+        val entered = try {
             enterPictureInPictureMode(params)
+        } catch (e: Exception) {
+            false
+        }
+        if (entered) {
+            // The cached flag may be stale: ask the page for the real state and refresh the buttons.
+            syncPlaybackStateFromPage()
+        } else {
+            isPipModeActive = false
+            applyPipLayout(false)
+        }
+    }
+
+    /** Reads the real play/pause state from the page and refreshes the PiP play/pause button. */
+    private fun syncPlaybackStateFromPage() {
+        webView.evaluateJavascript(
+            "(function(){try{var v=window.__gsVideo&&window.__gsVideo();return !!(v&&!v.paused&&!v.ended);}catch(e){return false;}})()"
+        ) { result ->
+            isVideoPlaying = (result == "true")
+            updatePipActions()
         }
     }
 
@@ -354,10 +493,12 @@ class MainActivity : Activity() {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isPipModeActive = isInPictureInPictureMode
         if (isInPictureInPictureMode) {
+            wasInPip = true
             hideAllFabs()
             applyPipLayout(true)
             webView.onResume()
             webView.resumeTimers()
+            syncPlaybackStateFromPage()
         } else {
             applyPipLayout(false)
             webView.onResume()
@@ -366,6 +507,8 @@ class MainActivity : Activity() {
             if (customView == null) {
                 showDefaultFabs()
             }
+            // Keep the full-mode UI in sync with whatever happened in the mini window.
+            webView.evaluateJavascript("(window.__gsReport || function(){})(true);", null)
         }
     }
 
@@ -379,6 +522,10 @@ class MainActivity : Activity() {
                 isAutoNextEnabled = true
                 updateFabColor(autoNextButton, true)
             }
+        } else if (openUrl != null) {
+            // Opened a plain URL: it no longer belongs to any playlist.
+            currentPlaylistId = null
+            currentVideoIndex = -1
         }
 
         updateAutoNextButtonVisibility()
@@ -399,118 +546,36 @@ class MainActivity : Activity() {
     }
 
     private fun syncRepeatStateToJs() {
-        val js = """
-            window.__gsRepeatEnabled = $isRepeatEnabled;
-            document.querySelectorAll('video').forEach(function(v) {
-                v.loop = $isRepeatEnabled;
-            });
-        """.trimIndent()
+        val js = "window.__gsRepeatEnabled = $isRepeatEnabled; " +
+            "document.querySelectorAll('video').forEach(function(v){ v.loop = $isRepeatEnabled; });"
         webView.evaluateJavascript(js, null)
     }
 
     private fun syncAutoNextStateToJs() {
         val hasPlaylist = (currentPlaylistId != null && currentVideoIndex >= 0)
-        val js = """
-            window.__gsAutoNextEnabled = $isAutoNextEnabled;
-            window.__gsHasPlaylist = $hasPlaylist;
-        """.trimIndent()
+        val js = "window.__gsAutoNextEnabled = $isAutoNextEnabled; window.__gsHasPlaylist = $hasPlaylist;"
         webView.evaluateJavascript(js, null)
     }
 
     private fun injectCoreProtectionScript() {
         val hasPlaylist = (currentPlaylistId != null && currentVideoIndex >= 0)
-        val js = """
-            (function() {
-                window.__gsRepeatEnabled = $isRepeatEnabled;
-                window.__gsAutoNextEnabled = $isAutoNextEnabled;
-                window.__gsHasPlaylist = $hasPlaylist;
+        val stateJs = "window.__gsRepeatEnabled = $isRepeatEnabled; " +
+            "window.__gsAutoNextEnabled = $isAutoNextEnabled; " +
+            "window.__gsHasPlaylist = $hasPlaylist;\n"
+        webView.evaluateJavascript(stateJs + CORE_JS, null)
+    }
 
-                if (!window.__gsHookInstalled) {
-                    window.__gsHookInstalled = true;
-
-                    try {
-                        Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
-                        Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
-                    } catch(e) {}
-                }
-
-                function handleVideoCompletion(video) {
-                    if (window.__gsRepeatEnabled) {
-                        video.currentTime = 0;
-                        video.play().catch(function(){});
-                    } else if (window.__gsAutoNextEnabled && window.__gsHasPlaylist) {
-                        if (window.AndroidBridge) {
-                            window.AndroidBridge.onVideoEnded();
-                        }
-                    }
-                }
-
-                function setupVideos() {
-                    var videos = document.querySelectorAll('video');
-                    videos.forEach(function(video) {
-                        if (video.muted) video.muted = false;
-                        if (video.volume < 1.0) video.volume = 1.0;
-
-                        video.loop = !!window.__gsRepeatEnabled;
-
-                        if (video.duration > 1 && !isNaN(video.duration)) {
-                            var remaining = video.duration - video.currentTime;
-                            if (remaining <= 0.35 && remaining >= 0) {
-                                if (window.__gsRepeatEnabled) {
-                                    video.currentTime = 0;
-                                    video.play().catch(function(){});
-                                } else if (window.__gsAutoNextEnabled && window.__gsHasPlaylist && !video.__gsNextSent) {
-                                    video.__gsNextSent = true;
-                                    if (window.AndroidBridge) window.AndroidBridge.onVideoEnded();
-                                }
-                            } else if (remaining > 2.0) {
-                                video.__gsNextSent = false;
-                            }
-                        }
-
-                        if (!video.hasAttribute('data-gs-bound')) {
-                            video.setAttribute('data-gs-bound', 'true');
-                            video.__gsNextSent = false;
-
-                            video.addEventListener('ended', function() {
-                                if (window.__gsRepeatEnabled) {
-                                    video.currentTime = 0;
-                                    video.play().catch(function(){});
-                                } else if (window.__gsAutoNextEnabled && window.__gsHasPlaylist && !video.__gsNextSent) {
-                                    video.__gsNextSent = true;
-                                    if (window.AndroidBridge) window.AndroidBridge.onVideoEnded();
-                                }
-                            });
-
-                            video.addEventListener('timeupdate', function() {
-                                if (window.__gsRepeatEnabled && video.duration > 1 && (video.duration - video.currentTime) <= 0.3) {
-                                    video.currentTime = 0;
-                                    video.play().catch(function(){});
-                                }
-                            });
-
-                            video.addEventListener('play', function() {
-                                if (window.AndroidBridge) window.AndroidBridge.onPlaybackStateChanged(true);
-                            });
-
-                            video.addEventListener('pause', function() {
-                                if (video.duration > 1 && (video.duration - video.currentTime) <= 0.5) {
-                                    handleVideoCompletion(video);
-                                    return;
-                                }
-                                if (window.AndroidBridge) window.AndroidBridge.onPlaybackStateChanged(false);
-                            });
-                        }
-                    });
-                }
-
-                setupVideos();
-                if (!window.__gsScanner) {
-                    window.__gsScanner = setInterval(setupVideos, 300);
-                }
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(js, null)
+    /** Keeps the playlist index correct when the user opens another video by hand. */
+    private fun syncPlaylistPositionWithUrl(url: String?) {
+        val pid = currentPlaylistId ?: return
+        val id = YoutubeHelper.extractVideoId(url) ?: return
+        val videos = PlaylistStore.getPlaylists(this).find { it.id == pid }?.videos
+        val idx = videos?.indexOfFirst { it.videoId == id } ?: -1
+        if (idx != currentVideoIndex) {
+            currentVideoIndex = idx
+            updateAutoNextButtonVisibility()
+            syncAutoNextStateToJs()
+        }
     }
 
     private inner class WebAppInterface {
@@ -518,7 +583,7 @@ class MainActivity : Activity() {
         fun onVideoEnded() {
             runOnUiThread {
                 if (isRepeatEnabled) {
-                    webView.evaluateJavascript("var v = document.querySelector('video'); if(v){ v.currentTime = 0; v.play(); }", null)
+                    webView.evaluateJavascript("(window.__gsRestart || function(){})();", null)
                 } else if (isAutoNextEnabled && currentPlaylistId != null && currentVideoIndex >= 0) {
                     playNextVideoInPlaylist()
                 }
@@ -659,6 +724,10 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView.saveState(outState)
+        outState.putString("gs_playlist_id", currentPlaylistId)
+        outState.putInt("gs_video_index", currentVideoIndex)
+        outState.putBoolean("gs_repeat", isRepeatEnabled)
+        outState.putBoolean("gs_autonext", isAutoNextEnabled)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -687,7 +756,13 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
-        if (isPipModeActive) {
+        if (wasInPip && !isInPictureInPictureMode) {
+            // The mini window was closed with "X": stop the video, as YouTube does,
+            // and keep the state flags consistent.
+            isPipModeActive = false
+            wasInPip = false
+            webView.evaluateJavascript("(window.__gsPause || function(){})();", null)
+        } else if (isPipModeActive) {
             webView.onResume()
             webView.resumeTimers()
         }
@@ -697,7 +772,9 @@ class MainActivity : Activity() {
         super.onResume()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !isInPictureInPictureMode) {
             isPipModeActive = false
+            wasInPip = false
             applyPipLayout(false)
+            if (customView == null) showDefaultFabs()
         }
         webView.onResume()
         webView.resumeTimers()
@@ -707,6 +784,7 @@ class MainActivity : Activity() {
         try {
             unregisterReceiver(pipReceiver)
         } catch (e: Exception) {}
+        scope.cancel()
         webView.destroy()
         super.onDestroy()
     }

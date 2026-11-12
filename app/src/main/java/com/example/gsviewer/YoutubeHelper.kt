@@ -12,23 +12,11 @@ object YoutubeHelper {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    private val idRegex = Regex("(?:[?&]v=|youtu\\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])")
+
     fun extractVideoId(url: String?): String? {
         if (url == null) return null
-        
-        val patterns = arrayOf("v=", "youtu.be/", "shorts/", "embed/")
-        for (pattern in patterns) {
-            val idx = url.indexOf(pattern)
-            if (idx != -1) {
-                val start = idx + pattern.length
-                if (url.length >= start + 11) {
-                    val candidate = url.substring(start, start + 11)
-                    if (candidate.matches(Regex("[A-Za-z0-9_-]{11}"))) {
-                        return candidate
-                    }
-                }
-            }
-        }
-        return null
+        return idRegex.find(url)?.groupValues?.get(1)
     }
 
     fun fetchOEmbed(videoId: String): SavedVideo {
