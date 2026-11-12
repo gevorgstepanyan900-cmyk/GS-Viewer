@@ -46,6 +46,9 @@ class MainActivity : Activity() {
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private lateinit var rootFrame: FrameLayout
 
+    // Explicit PiP state flag so transitions never leave stale PiP locks
+    private var isPipModeActive: Boolean = false
+
     // Loop & Playlist state
     private var isRepeatEnabled: Boolean = false
     private var isAutoNextEnabled: Boolean = false
@@ -138,7 +141,7 @@ class MainActivity : Activity() {
                 customView = null
                 customViewCallback?.onCustomViewHidden()
                 webView.visibility = View.VISIBLE
-                if (!isInPictureInPictureMode) {
+                if (!isPipModeActive) {
                     showDefaultFabs()
                 }
             }
@@ -149,7 +152,7 @@ class MainActivity : Activity() {
                 super.doUpdateVisitedHistory(view, url, isReload)
                 updateSaveButton(url)
                 injectCoreProtectionScript()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+                if (isPipModeActive) {
                     applyPipLayout(true)
                     webView.evaluateJavascript("window.__gsPipActive = true; window.__gsUserPaused = false;", null)
                 }
@@ -158,7 +161,7 @@ class MainActivity : Activity() {
                 super.onPageFinished(view, url)
                 updateSaveButton(url)
                 injectCoreProtectionScript()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+                if (isPipModeActive) {
                     applyPipLayout(true)
                     webView.evaluateJavascript("window.__gsPipActive = true; window.__gsUserPaused = false; var v = document.querySelector('video'); if(v && v.paused) v.play();", null)
                 }
@@ -236,7 +239,7 @@ class MainActivity : Activity() {
 
     private fun enterPipMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Preserve current play/pause state when entering PiP instead of forcing play if user paused it
+            isPipModeActive = true
             val syncJs = """
                 (function() {
                     var v = document.querySelector('video');
@@ -296,7 +299,7 @@ class MainActivity : Activity() {
     }
 
     private fun updatePipActions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isPipModeActive) {
             try {
                 val params = PictureInPictureParams.Builder()
                     .setAspectRatio(Rational(16, 9))
@@ -351,34 +354,19 @@ class MainActivity : Activity() {
         } else {
             val js = """
                 (function() {
+                    window.__gsPipActive = false;
+                    window.__gsUserPaused = false;
                     var style = document.getElementById('gs-pip-style');
                     if (style) style.remove();
 
-                    // Restore interactive controls and layout cleanly after exiting PiP
-                    var v = document.querySelector('video');
-                    if (v) {
-                        v.style.pointerEvents = 'auto';
-                        // Sync YouTube's internal player UI state with the actual <video> paused/playing state
-                        var player = document.getElementById('movie_player');
-                        if (player) {
-                            if (v.paused && typeof player.pauseVideo === 'function') {
-                                window.__gsUserPaused = true;
-                                player.pauseVideo();
-                            } else if (!v.paused && typeof player.playVideo === 'function') {
-                                window.__gsUserPaused = false;
-                                player.playVideo();
-                            }
-                        }
+                    // Do NOT call player.playVideo() or player.pauseVideo() here so playback isn't interrupted or re-buffered.
+                    // Just refresh layout & wake YouTube's player controls cleanly.
+                    var player = document.getElementById('movie_player');
+                    if (player && typeof player.wakeUpControls === 'function') {
+                        try { player.wakeUpControls(); } catch(e) {}
                     }
-
-                    // Trigger layout & player UI recalculation so YouTube fullscreen controls (play/pause, seekbar) respond immediately
                     window.dispatchEvent(new Event('resize'));
-                    setTimeout(function() {
-                        window.dispatchEvent(new Event('resize'));
-                    }, 150);
-                    setTimeout(function() {
-                        window.dispatchEvent(new Event('resize'));
-                    }, 400);
+                    setTimeout(function() { window.dispatchEvent(new Event('resize')); }, 150);
                 })();
             """.trimIndent()
             webView.evaluateJavascript(js, null)
@@ -394,6 +382,7 @@ class MainActivity : Activity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration?) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isPipModeActive = isInPictureInPictureMode
         if (isInPictureInPictureMode) {
             hideAllFabs()
             applyPipLayout(true)
@@ -401,13 +390,11 @@ class MainActivity : Activity() {
             webView.onResume()
             webView.resumeTimers()
         } else {
-            // Reset PiP flags FIRST so normal fullscreen/inline YouTube buttons can call pause()/play() freely
             webView.evaluateJavascript("window.__gsPipActive = false; window.__gsUserPaused = false;", null)
             applyPipLayout(false)
             webView.onResume()
             webView.resumeTimers()
-            webView.requestLayout()
-            customView?.requestLayout()
+            webView.requestFocus()
             if (customView == null) {
                 showDefaultFabs()
             }
@@ -436,7 +423,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateAutoNextButtonVisibility() {
-        if (customView == null && !isInPictureInPictureMode && currentPlaylistId != null && currentVideoIndex >= 0) {
+        if (customView == null && !isPipModeActive && currentPlaylistId != null && currentVideoIndex >= 0) {
             autoNextButton.visibility = View.VISIBLE
         } else {
             autoNextButton.visibility = View.GONE
@@ -464,13 +451,12 @@ class MainActivity : Activity() {
 
     private fun injectCoreProtectionScript() {
         val hasPlaylist = (currentPlaylistId != null && currentVideoIndex >= 0)
-        val isPipNow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) isInPictureInPictureMode else false
         val js = """
             (function() {
                 window.__gsRepeatEnabled = $isRepeatEnabled;
                 window.__gsAutoNextEnabled = $isAutoNextEnabled;
                 window.__gsHasPlaylist = $hasPlaylist;
-                window.__gsPipActive = $isPipNow;
+                window.__gsPipActive = $isPipModeActive;
 
                 if (!window.__gsHookInstalled) {
                     window.__gsHookInstalled = true;
@@ -481,9 +467,18 @@ class MainActivity : Activity() {
                         Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
                     } catch(e) {}
 
+                    // Any direct user touch/pointer interaction on the page unlocks user-initiated pause
+                    ['touchstart', 'pointerdown', 'mousedown', 'click'].forEach(function(evtName) {
+                        document.addEventListener(evtName, function() {
+                            if (!window.__gsPipActive) {
+                                window.__gsUserPaused = true;
+                            }
+                        }, true);
+                    });
+
                     const origPause = HTMLMediaElement.prototype.pause;
                     HTMLMediaElement.prototype.pause = function() {
-                        // Only block automatic background pauses when actually in PiP mode and not requested by user
+                        // Only block automatic background pauses when actually inside PiP mode and not initiated by user
                         if (window.__gsPipActive === true && window.__gsUserPaused !== true) {
                             return;
                         }
@@ -614,11 +609,11 @@ class MainActivity : Activity() {
             currentVideoIndex = nextIndex
             val nextVideo = videos[nextIndex]
             webView.loadUrl(nextVideo.url)
-            if (!isInPictureInPictureMode) {
+            if (!isPipModeActive) {
                 Toast.makeText(this, "Հաջորդ տեսանյութը: ${nextVideo.title}", Toast.LENGTH_SHORT).show()
             }
         } else {
-            if (!isInPictureInPictureMode) {
+            if (!isPipModeActive) {
                 Toast.makeText(this, "Փլեյլիստի վերջին տեսանյութն ավարտվեց", Toast.LENGTH_SHORT).show()
             }
         }
@@ -661,7 +656,7 @@ class MainActivity : Activity() {
 
     private fun updateSaveButton(url: String?) {
         val id = YoutubeHelper.extractVideoId(url)
-        if (customView == null && !isInPictureInPictureMode) {
+        if (customView == null && !isPipModeActive) {
             saveButton.visibility = if (id != null) View.VISIBLE else View.INVISIBLE
         }
     }
@@ -745,7 +740,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        if (!isInPictureInPictureMode) {
+        if (!isPipModeActive) {
             webView.onPause()
         } else {
             webView.onResume()
@@ -755,7 +750,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
-        if (isInPictureInPictureMode) {
+        if (isPipModeActive) {
             webView.onResume()
             webView.resumeTimers()
         }
@@ -764,7 +759,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !isInPictureInPictureMode) {
-            webView.evaluateJavascript("window.__gsPipActive = false; window.__gsUserPaused = false;", null)
+            isPipModeActive = false
+            applyPipLayout(false)
         }
         webView.onResume()
         webView.resumeTimers()
