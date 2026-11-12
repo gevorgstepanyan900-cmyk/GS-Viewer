@@ -24,7 +24,10 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.*
+import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.TextView
+import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,9 +51,8 @@ class MainActivity : Activity() {
     private var isAutoNextEnabled: Boolean = false
     private var currentPlaylistId: String? = null
     private var currentVideoIndex: Int = -1
-    private var isVideoPlaying: Boolean = true
-    private var userRequestedPause: Boolean = false
 
+    // PiP Control Constants
     companion object {
         private const val ACTION_MEDIA_CONTROL = "com.example.gsviewer.MEDIA_CONTROL"
         private const val EXTRA_CONTROL_TYPE = "control_type"
@@ -59,38 +61,34 @@ class MainActivity : Activity() {
         private const val CONTROL_TYPE_FORWARD = 3
     }
 
-    private val pipActionReceiver = object : BroadcastReceiver() {
+    private var isVideoPlaying: Boolean = true
+
+    private val pipReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent == null || intent.action != ACTION_MEDIA_CONTROL) return
+            if (intent?.action != ACTION_MEDIA_CONTROL) return
             when (intent.getIntExtra(EXTRA_CONTROL_TYPE, 0)) {
                 CONTROL_TYPE_PLAY_PAUSE -> {
                     webView.evaluateJavascript(
-                        "(function() { " +
-                        "var v = document.querySelector('video'); " +
-                        "if (v) { " +
-                        "  if (v.paused) { " +
-                        "    window.gsUserPaused = false; " +
-                        "    v.play(); " +
-                        "  } else { " +
-                        "    window.gsUserPaused = true; " +
-                        "    v.pause(); " +
-                        "  } " +
-                        "} " +
-                        "})();",
-                        null
+                        """
+                        (function() {
+                            var v = document.querySelector('video');
+                            if (!v) return;
+                            if (v.paused) {
+                                window.__gsUserPaused = false;
+                                v.play();
+                            } else {
+                                window.__gsUserPaused = true;
+                                v.pause();
+                            }
+                        })();
+                        """.trimIndent(), null
                     )
                 }
                 CONTROL_TYPE_REWIND -> {
-                    webView.evaluateJavascript(
-                        "(function() { var v = document.querySelector('video'); if (v) { v.currentTime = Math.max(0, v.currentTime - 10); } })();",
-                        null
-                    )
+                    webView.evaluateJavascript("var v = document.querySelector('video'); if(v) v.currentTime = Math.max(0, v.currentTime - 10);", null)
                 }
                 CONTROL_TYPE_FORWARD -> {
-                    webView.evaluateJavascript(
-                        "(function() { var v = document.querySelector('video'); if (v) { v.currentTime = Math.min(v.duration || 999999, v.currentTime + 10); } })();",
-                        null
-                    )
+                    webView.evaluateJavascript("var v = document.querySelector('video'); if(v) v.currentTime += 10;", null)
                 }
             }
         }
@@ -102,12 +100,6 @@ class MainActivity : Activity() {
         rootFrame = FrameLayout(this)
         webView = WebView(this)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(pipActionReceiver, IntentFilter(ACTION_MEDIA_CONTROL), RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(pipActionReceiver, IntentFilter(ACTION_MEDIA_CONTROL))
-        }
-
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -117,6 +109,12 @@ class MainActivity : Activity() {
         }
 
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(pipReceiver, IntentFilter(ACTION_MEDIA_CONTROL), RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(pipReceiver, IntentFilter(ACTION_MEDIA_CONTROL))
+        }
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
@@ -131,11 +129,7 @@ class MainActivity : Activity() {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 ))
                 webView.visibility = View.GONE
-                saveButton.visibility = View.GONE
-                playlistButton.visibility = View.GONE
-                repeatButton.visibility = View.GONE
-                autoNextButton.visibility = View.GONE
-                pipButton.visibility = View.GONE
+                hideAllFabs()
             }
 
             override fun onHideCustomView() {
@@ -144,11 +138,9 @@ class MainActivity : Activity() {
                 customView = null
                 customViewCallback?.onCustomViewHidden()
                 webView.visibility = View.VISIBLE
-                playlistButton.visibility = View.VISIBLE
-                repeatButton.visibility = View.VISIBLE
-                updateAutoNextButtonVisibility()
-                updatePipButtonVisibility()
-                updateSaveButton(webView.url)
+                if (!isInPictureInPictureMode) {
+                    showDefaultFabs()
+                }
             }
         }
 
@@ -156,14 +148,12 @@ class MainActivity : Activity() {
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                 super.doUpdateVisitedHistory(view, url, isReload)
                 updateSaveButton(url)
-                updatePipButtonVisibility()
-                injectAudioAndVideoListeners()
+                injectCoreProtectionScript()
             }
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 updateSaveButton(url)
-                updatePipButtonVisibility()
-                injectAudioAndVideoListeners()
+                injectCoreProtectionScript()
             }
         }
 
@@ -175,11 +165,11 @@ class MainActivity : Activity() {
         playlistButton = makeFab("📁") {
             startActivity(Intent(this@MainActivity, PlaylistActivity::class.java))
         }
-        rootFrame.addView(playlistButton, fabParams(Gravity.BOTTOM or Gravity.START, 16, 96))
+        rootFrame.addView(playlistButton, fabParams(Gravity.BOTTOM or Gravity.START, 16))
 
         saveButton = makeFab("⭐") { showPlaylistSelectionDialog() }
         saveButton.visibility = View.INVISIBLE
-        rootFrame.addView(saveButton, fabParams(Gravity.BOTTOM or Gravity.END, 16, 96))
+        rootFrame.addView(saveButton, fabParams(Gravity.BOTTOM or Gravity.END, 16))
 
         repeatButton = makeFab("🔂") {
             isRepeatEnabled = !isRepeatEnabled
@@ -188,7 +178,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
             injectLoopScript()
         }
-        rootFrame.addView(repeatButton, fabParams(Gravity.BOTTOM or Gravity.END, 80, 96))
+        rootFrame.addView(repeatButton, fabParams(Gravity.BOTTOM or Gravity.END, 80))
 
         autoNextButton = makeFab("⏭️") {
             isAutoNextEnabled = !isAutoNextEnabled
@@ -197,13 +187,18 @@ class MainActivity : Activity() {
             Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
         }
         autoNextButton.visibility = View.GONE
-        rootFrame.addView(autoNextButton, fabParams(Gravity.BOTTOM or Gravity.START, 80, 96))
+        rootFrame.addView(autoNextButton, fabParams(Gravity.BOTTOM or Gravity.START, 80))
 
-        pipButton = makeFab("🗗") {
-            enterPipMode()
-        }
-        pipButton.visibility = View.GONE
-        rootFrame.addView(pipButton, fabParams(Gravity.TOP or Gravity.END, 16, 16))
+        pipButton = makeFab("🗗") { enterPipMode() }
+        rootFrame.addView(pipButton, FrameLayout.LayoutParams(
+            (48 * resources.displayMetrics.density).toInt(),
+            (48 * resources.displayMetrics.density).toInt(),
+            Gravity.TOP or Gravity.END
+        ).apply {
+            val m = (16 * resources.displayMetrics.density).toInt()
+            topMargin = m
+            rightMargin = m
+        })
 
         setContentView(rootFrame)
 
@@ -212,157 +207,162 @@ class MainActivity : Activity() {
             webView.restoreState(savedInstanceState)
         }
         updateSaveButton(webView.url)
-        updatePipButtonVisibility()
     }
 
-    private fun buildPipParams(): PictureInPictureParams {
-        val actions = ArrayList<RemoteAction>()
-
-        // 1. Rewind 10s
-        val rewindIntent = PendingIntent.getBroadcast(
-            this,
-            CONTROL_TYPE_REWIND,
-            Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_REWIND),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        actions.add(
-            RemoteAction(
-                Icon.createWithResource(this, android.R.drawable.ic_media_rew),
-                "Հետ 10վ",
-                "Հետ տալ 10 վայրկյան",
-                rewindIntent
-            )
-        )
-
-        // 2. Play / Pause
-        val playPauseIntent = PendingIntent.getBroadcast(
-            this,
-            CONTROL_TYPE_PLAY_PAUSE,
-            Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_PLAY_PAUSE),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val playPauseIcon = if (isVideoPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
-        val playPauseTitle = if (isVideoPlaying) "Դադար" else "Նվագարկել"
-        actions.add(
-            RemoteAction(
-                Icon.createWithResource(this, playPauseIcon),
-                playPauseTitle,
-                playPauseTitle,
-                playPauseIntent
-            )
-        )
-
-        // 3. Forward 10s
-        val forwardIntent = PendingIntent.getBroadcast(
-            this,
-            CONTROL_TYPE_FORWARD,
-            Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_FORWARD),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        actions.add(
-            RemoteAction(
-                Icon.createWithResource(this, android.R.drawable.ic_media_ff),
-                "Առաջ 10վ",
-                "Առաջ տալ 10 վայրկյան",
-                forwardIntent
-            )
-        )
-
-        return PictureInPictureParams.Builder()
-            .setAspectRatio(Rational(16, 9))
-            .setActions(actions)
-            .build()
+    private fun hideAllFabs() {
+        saveButton.visibility = View.GONE
+        playlistButton.visibility = View.GONE
+        repeatButton.visibility = View.GONE
+        autoNextButton.visibility = View.GONE
+        pipButton.visibility = View.GONE
     }
 
-    private fun updatePipParams() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
-            try {
-                setPictureInPictureParams(buildPipParams())
-            } catch (e: Exception) {
-                // Ignore
-            }
-        }
+    private fun showDefaultFabs() {
+        playlistButton.visibility = View.VISIBLE
+        repeatButton.visibility = View.VISIBLE
+        pipButton.visibility = View.VISIBLE
+        updateAutoNextButtonVisibility()
+        updateSaveButton(webView.url)
     }
 
     private fun enterPipMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            userRequestedPause = false
-            prepareVideoForPip()
-            enterPictureInPictureMode(buildPipParams())
+            webView.evaluateJavascript("window.__gsPipActive = true; window.__gsUserPaused = false;", null)
+            applyPipLayout(true)
+            webView.evaluateJavascript("var v = document.querySelector('video'); if(v && v.paused) v.play();", null)
+
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .setActions(buildPipActions())
+                .build()
+            enterPictureInPictureMode(params)
         }
     }
 
-    private fun prepareVideoForPip() {
-        // Fix sizing and ensure video fills PiP container cleanly without cropping or collapsing.
-        val js = "(function() {" +
-                "window.gsInPip = true;" +
-                "window.gsUserPaused = false;" +
-                "try {" +
-                "  Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });" +
-                "  Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });" +
-                "} catch(e) {}" +
-                "var style = document.getElementById('gs-pip-style');" +
-                "if (!style) {" +
-                "  style = document.createElement('style');" +
-                "  style.id = 'gs-pip-style';" +
-                "  style.innerHTML = '" +
-                "    body, html { width: 100% !important; height: 100% !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; background: #000 !important; } " +
-                "    video { width: 100% !important; height: 100% !important; max-width: none !important; max-height: none !important; object-fit: contain !important; background: #000 !important; position: static !important; } " +
-                "    .html5-video-player, .html5-video-container { width: 100% !important; height: 100% !important; background: #000 !important; } " +
-                "    .ytp-chrome-top, .ytp-chrome-bottom, .mobile-topbar-header, ytm-mobile-topbar-renderer, .player-controls-content, .player-controls-top, .player-controls-bottom, ytm-pivot-bar-renderer { display: none !important; opacity: 0 !important; pointer-events: none !important; } " +
-                "  ';" +
-                "  document.head.appendChild(style);" +
-                "}" +
-                "var v = document.querySelector('video');" +
-                "if (v) {" +
-                "  v.muted = false;" +
-                "  v.play().catch(function(){});" +
-                "}" +
-                "})();"
-        webView.evaluateJavascript(js, null)
+    private fun buildPipActions(): List<RemoteAction> {
+        val actions = mutableListOf<RemoteAction>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val rewIntent = PendingIntent.getBroadcast(
+                this, CONTROL_TYPE_REWIND,
+                Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_REWIND),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            actions.add(RemoteAction(
+                Icon.createWithResource(this, android.R.drawable.ic_media_rew),
+                "Հետ 10վ", "Հետ 10վ", rewIntent
+            ))
+
+            val playPauseIntent = PendingIntent.getBroadcast(
+                this, CONTROL_TYPE_PLAY_PAUSE,
+                Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_PLAY_PAUSE),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val iconRes = if (isVideoPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+            val title = if (isVideoPlaying) "Դադար" else "Նվագարկել"
+            actions.add(RemoteAction(
+                Icon.createWithResource(this, iconRes),
+                title, title, playPauseIntent
+            ))
+
+            val ffIntent = PendingIntent.getBroadcast(
+                this, CONTROL_TYPE_FORWARD,
+                Intent(ACTION_MEDIA_CONTROL).setPackage(packageName).putExtra(EXTRA_CONTROL_TYPE, CONTROL_TYPE_FORWARD),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            actions.add(RemoteAction(
+                Icon.createWithResource(this, android.R.drawable.ic_media_ff),
+                "Առաջ 10վ", "Առաջ 10վ", ffIntent
+            ))
+        }
+        return actions
     }
 
-    private fun restoreVideoFromPip() {
-        val js = "(function() {" +
-                "window.gsInPip = false;" +
-                "var style = document.getElementById('gs-pip-style');" +
-                "if (style) { style.remove(); }" +
-                "})();"
-        webView.evaluateJavascript(js, null)
+    private fun updatePipActions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+            try {
+                val params = PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .setActions(buildPipActions())
+                    .build()
+                setPictureInPictureParams(params)
+            } catch (e: Exception) {}
+        }
+    }
+
+    private fun applyPipLayout(enable: Boolean) {
+        if (enable) {
+            val js = """
+                (function() {
+                    var style = document.getElementById('gs-pip-style');
+                    if (!style) {
+                        style = document.createElement('style');
+                        style.id = 'gs-pip-style';
+                        style.innerHTML = `
+                            body, html { overflow: hidden !important; background: #000 !important; margin: 0 !important; padding: 0 !important; }
+                            ytm-mobile-topbar-renderer, header, ytm-pivot-bar-renderer, .related-chips-slot-renderer, 
+                            ytm-item-section-renderer, ytm-single-column-watch-next-results-renderer > :not(.player-size),
+                            .ytp-chrome-top, .ytp-chrome-bottom, .player-controls-content, .player-controls-top, .player-controls-bottom {
+                                display: none !important;
+                                opacity: 0 !important;
+                                pointer-events: none !important;
+                            }
+                            #player-container-id, .player-container, #movie_player, .html5-video-player {
+                                position: fixed !important;
+                                top: 0 !important;
+                                left: 0 !important;
+                                width: 100vw !important;
+                                height: 100vh !important;
+                                z-index: 999999 !important;
+                                background: #000 !important;
+                            }
+                            video {
+                                position: fixed !important;
+                                width: 100vw !important;
+                                height: 100vh !important;
+                                object-fit: contain !important;
+                                top: 0 !important;
+                                left: 0 !important;
+                                background: #000 !important;
+                            }
+                        `;
+                        document.head.appendChild(style);
+                    }
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(js, null)
+        } else {
+            val js = """
+                (function() {
+                    var style = document.getElementById('gs-pip-style');
+                    if (style) style.remove();
+                    window.dispatchEvent(new Event('resize'));
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(js, null)
+        }
     }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        val id = YoutubeHelper.extractVideoId(webView.url)
-        if (id != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && customView == null) {
-            try {
-                userRequestedPause = false
-                prepareVideoForPip()
-                enterPictureInPictureMode(buildPipParams())
-            } catch (e: Exception) {
-                // Ignore
-            }
+        if (YoutubeHelper.extractVideoId(webView.url) != null || customView != null) {
+            enterPipMode()
         }
     }
 
-    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration?) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         if (isInPictureInPictureMode) {
-            playlistButton.visibility = View.GONE
-            saveButton.visibility = View.GONE
-            repeatButton.visibility = View.GONE
-            autoNextButton.visibility = View.GONE
-            pipButton.visibility = View.GONE
-            prepareVideoForPip()
+            hideAllFabs()
+            applyPipLayout(true)
+            webView.evaluateJavascript("window.__gsPipActive = true;", null)
             webView.onResume()
             webView.resumeTimers()
         } else {
-            restoreVideoFromPip()
-            playlistButton.visibility = View.VISIBLE
-            repeatButton.visibility = View.VISIBLE
-            updateAutoNextButtonVisibility()
-            updatePipButtonVisibility()
-            updateSaveButton(webView.url)
+            webView.evaluateJavascript("window.__gsPipActive = false;", null)
+            applyPipLayout(false)
+            if (customView == null) {
+                showDefaultFabs()
+            }
         }
     }
 
@@ -373,7 +373,6 @@ class MainActivity : Activity() {
         currentVideoIndex = intent.getIntExtra("video_index", -1)
 
         updateAutoNextButtonVisibility()
-        updatePipButtonVisibility()
 
         when {
             openUrl != null -> webView.loadUrl(openUrl)
@@ -382,67 +381,74 @@ class MainActivity : Activity() {
     }
 
     private fun updateAutoNextButtonVisibility() {
-        if (customView == null && currentPlaylistId != null && currentVideoIndex >= 0) {
+        if (customView == null && !isInPictureInPictureMode && currentPlaylistId != null && currentVideoIndex >= 0) {
             autoNextButton.visibility = View.VISIBLE
         } else {
             autoNextButton.visibility = View.GONE
         }
     }
 
-    private fun updatePipButtonVisibility() {
-        val id = YoutubeHelper.extractVideoId(webView.url)
-        if (customView == null && id != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            pipButton.visibility = View.VISIBLE
-        } else {
-            pipButton.visibility = View.GONE
-        }
-    }
-
     private fun injectLoopScript() {
-        val loopJs = "var videos = document.querySelectorAll('video'); videos.forEach(function(v) { v.loop = " + isRepeatEnabled + "; });"
+        val loopJs = "var videos = document.querySelectorAll('video'); videos.forEach(function(v) { v.loop = $isRepeatEnabled; });"
         webView.evaluateJavascript(loopJs, null)
     }
 
-    private fun injectAudioAndVideoListeners() {
-        val js = "(function() {" +
-                "try {" +
-                "  Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });" +
-                "  Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });" +
-                "} catch(e) {}" +
-                "function applySettings() {" +
-                "  var videos = document.querySelectorAll('video');" +
-                "  videos.forEach(function(video) {" +
-                "    video.muted = false;" +
-                "    video.volume = 1.0;" +
-                "    if (" + isRepeatEnabled + ") { video.loop = true; } else { video.loop = false; }" +
-                "    if (window.gsInPip && !window.gsUserPaused && video.paused && !video.ended && video.readyState >= 2) {" +
-                "      video.play().catch(function(){});" +
-                "    }" +
-                "    if (!video.hasAttribute('data-ended-listener')) {" +
-                "      video.setAttribute('data-ended-listener', 'true');" +
-                "      video.addEventListener('ended', function() {" +
-                "        if (window.AndroidBridge) { window.AndroidBridge.onVideoEnded(); }" +
-                "      });" +
-                "      video.addEventListener('play', function() {" +
-                "        window.gsUserPaused = false;" +
-                "        if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(true); }" +
-                "      });" +
-                "      video.addEventListener('pause', function() {" +
-                "        if (window.gsInPip && !window.gsUserPaused && !video.ended) {" +
-                "          setTimeout(function() { if (window.gsInPip && !window.gsUserPaused && video.paused) { video.play().catch(function(){}); } }, 30);" +
-                "        } else {" +
-                "          if (window.AndroidBridge) { window.AndroidBridge.onPlaybackStateChanged(false); }" +
-                "        }" +
-                "      });" +
-                "    }" +
-                "  });" +
-                "}" +
-                "applySettings();" +
-                "if (!window.gsIntervalSet) {" +
-                "  window.gsIntervalSet = true;" +
-                "  setInterval(applySettings, 200);" +
-                "}" +
-                "})();"
+    private fun injectCoreProtectionScript() {
+        val js = """
+            (function() {
+                if (!window.__gsHookInstalled) {
+                    window.__gsHookInstalled = true;
+                    window.__gsPipActive = false;
+                    window.__gsUserPaused = false;
+
+                    try {
+                        Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
+                        Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+                    } catch(e) {}
+
+                    const origPause = HTMLMediaElement.prototype.pause;
+                    HTMLMediaElement.prototype.pause = function() {
+                        if (window.__gsPipActive && !window.__gsUserPaused) {
+                            return;
+                        }
+                        return origPause.apply(this, arguments);
+                    };
+
+                    const origPlay = HTMLMediaElement.prototype.play;
+                    HTMLMediaElement.prototype.play = function() {
+                        window.__gsUserPaused = false;
+                        return origPlay.apply(this, arguments);
+                    };
+                }
+
+                function setupVideos() {
+                    var videos = document.querySelectorAll('video');
+                    videos.forEach(function(video) {
+                        if (video.muted) video.muted = false;
+                        if (video.volume < 1.0) video.volume = 1.0;
+                        video.loop = $isRepeatEnabled;
+
+                        if (!video.hasAttribute('data-gs-bound')) {
+                            video.setAttribute('data-gs-bound', 'true');
+                            video.addEventListener('ended', function() {
+                                if (window.AndroidBridge) window.AndroidBridge.onVideoEnded();
+                            });
+                            video.addEventListener('play', function() {
+                                if (window.AndroidBridge) window.AndroidBridge.onPlaybackStateChanged(true);
+                            });
+                            video.addEventListener('pause', function() {
+                                if (window.AndroidBridge) window.AndroidBridge.onPlaybackStateChanged(false);
+                            });
+                        }
+                    });
+                }
+
+                setupVideos();
+                if (!window.__gsScanner) {
+                    window.__gsScanner = setInterval(setupVideos, 1000);
+                }
+            })();
+        """.trimIndent()
         webView.evaluateJavascript(js, null)
     }
 
@@ -451,7 +457,7 @@ class MainActivity : Activity() {
         fun onVideoEnded() {
             runOnUiThread {
                 if (isRepeatEnabled) {
-                    webView.evaluateJavascript("var videos = document.querySelectorAll('video'); videos.forEach(function(v) { v.currentTime = 0; v.play(); });", null)
+                    webView.evaluateJavascript("var v = document.querySelector('video'); if(v){ v.currentTime = 0; v.play(); }", null)
                 } else if (isAutoNextEnabled && currentPlaylistId != null && currentVideoIndex >= 0) {
                     playNextVideoInPlaylist()
                 }
@@ -461,8 +467,10 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun onPlaybackStateChanged(playing: Boolean) {
             runOnUiThread {
-                isVideoPlaying = playing
-                updatePipParams()
+                if (isVideoPlaying != playing) {
+                    isVideoPlaying = playing
+                    updatePipActions()
+                }
             }
         }
     }
@@ -507,7 +515,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun fabParams(gravity: Int, marginSideDp: Int, marginBottomDp: Int) = FrameLayout.LayoutParams(
+    private fun fabParams(gravity: Int, marginSideDp: Int) = FrameLayout.LayoutParams(
         (56 * resources.displayMetrics.density).toInt(),
         (56 * resources.displayMetrics.density).toInt(),
         gravity
@@ -515,13 +523,12 @@ class MainActivity : Activity() {
         val m = (marginSideDp * resources.displayMetrics.density).toInt()
         leftMargin = m
         rightMargin = m
-        topMargin = m
-        bottomMargin = (marginBottomDp * resources.displayMetrics.density).toInt()
+        bottomMargin = (96 * resources.displayMetrics.density).toInt()
     }
 
     private fun updateSaveButton(url: String?) {
         val id = YoutubeHelper.extractVideoId(url)
-        if (customView == null) {
+        if (customView == null && !isInPictureInPictureMode) {
             saveButton.visibility = if (id != null) View.VISIBLE else View.INVISIBLE
         }
     }
@@ -605,17 +612,17 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+        if (!isInPictureInPictureMode) {
+            webView.onPause()
+        } else {
             webView.onResume()
             webView.resumeTimers()
-            return
         }
-        webView.onPause()
     }
 
     override fun onStop() {
         super.onStop()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+        if (isInPictureInPictureMode) {
             webView.onResume()
             webView.resumeTimers()
         }
@@ -629,10 +636,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         try {
-            unregisterReceiver(pipActionReceiver)
-        } catch (e: Exception) {
-            // Ignore
-        }
+            unregisterReceiver(pipReceiver)
+        } catch (e: Exception) {}
         webView.destroy()
         super.onDestroy()
     }
