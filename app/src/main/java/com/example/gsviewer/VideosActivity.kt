@@ -28,7 +28,7 @@ class VideosActivity : Activity() {
             items = videos,
             onClick = { video ->
                 val videoIndex = videos.indexOf(video)
-                val intent = Intent(this@VideosActivity, MainActivity::class.java).apply {
+                val intent = Intent(this, MainActivity::class.java).apply {
                     putExtra("open_url", video.url)
                     putExtra("playlist_id", playlistId)
                     putExtra("video_index", videoIndex)

@@ -3,10 +3,14 @@ package com.example.gsviewer
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -26,6 +30,7 @@ class MainActivity : Activity() {
     private lateinit var playlistButton: TextView
     private lateinit var repeatButton: TextView
     private lateinit var autoNextButton: TextView
+    private lateinit var pipButton: TextView
 
     private val scope = CoroutineScope(Dispatchers.Main)
     private var customView: View? = null
@@ -71,6 +76,7 @@ class MainActivity : Activity() {
                 playlistButton.visibility = View.GONE
                 repeatButton.visibility = View.GONE
                 autoNextButton.visibility = View.GONE
+                pipButton.visibility = View.GONE
             }
 
             override fun onHideCustomView() {
@@ -80,8 +86,9 @@ class MainActivity : Activity() {
                 customViewCallback?.onCustomViewHidden()
                 webView.visibility = View.VISIBLE
                 playlistButton.visibility = View.VISIBLE
-                updateSaveButton(webView.url)
+                repeatButton.visibility = View.VISIBLE
                 updateAutoNextButtonVisibility()
+                updatePipButtonVisibility()
                 updateSaveButton(webView.url)
             }
         }
@@ -90,11 +97,13 @@ class MainActivity : Activity() {
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                 super.doUpdateVisitedHistory(view, url, isReload)
                 updateSaveButton(url)
+                updatePipButtonVisibility()
                 injectAudioAndVideoListeners()
             }
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 updateSaveButton(url)
+                updatePipButtonVisibility()
                 injectAudioAndVideoListeners()
             }
         }
@@ -107,11 +116,11 @@ class MainActivity : Activity() {
         playlistButton = makeFab("📁") {
             startActivity(Intent(this@MainActivity, PlaylistActivity::class.java))
         }
-        rootFrame.addView(playlistButton, fabParams(Gravity.BOTTOM or Gravity.START, 16))
+        rootFrame.addView(playlistButton, fabParams(Gravity.BOTTOM or Gravity.START, 16, 96))
 
         saveButton = makeFab("⭐") { showPlaylistSelectionDialog() }
         saveButton.visibility = View.INVISIBLE
-        rootFrame.addView(saveButton, fabParams(Gravity.BOTTOM or Gravity.END, 16))
+        rootFrame.addView(saveButton, fabParams(Gravity.BOTTOM or Gravity.END, 16, 96))
 
         repeatButton = makeFab("🔂") {
             isRepeatEnabled = !isRepeatEnabled
@@ -120,8 +129,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
             injectLoopScript()
         }
-        repeatButton.visibility = View.INVISIBLE
-        rootFrame.addView(repeatButton, fabParams(Gravity.BOTTOM or Gravity.END, 80))
+        rootFrame.addView(repeatButton, fabParams(Gravity.BOTTOM or Gravity.END, 80, 96))
 
         autoNextButton = makeFab("⏭️") {
             isAutoNextEnabled = !isAutoNextEnabled
@@ -130,7 +138,13 @@ class MainActivity : Activity() {
             Toast.makeText(this, stateText, Toast.LENGTH_SHORT).show()
         }
         autoNextButton.visibility = View.GONE
-        rootFrame.addView(autoNextButton, fabParams(Gravity.BOTTOM or Gravity.START, 80))
+        rootFrame.addView(autoNextButton, fabParams(Gravity.BOTTOM or Gravity.START, 80, 96))
+
+        pipButton = makeFab("🗗") {
+            enterPipMode()
+        }
+        pipButton.visibility = View.GONE
+        rootFrame.addView(pipButton, fabParams(Gravity.TOP or Gravity.END, 16, 16))
 
         setContentView(rootFrame)
 
@@ -139,6 +153,48 @@ class MainActivity : Activity() {
             webView.restoreState(savedInstanceState)
         }
         updateSaveButton(webView.url)
+        updatePipButtonVisibility()
+    }
+
+    private fun enterPipMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .build()
+            enterPictureInPictureMode(params)
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val id = YoutubeHelper.extractVideoId(webView.url)
+        if (id != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && customView == null) {
+            try {
+                val params = PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .build()
+                enterPictureInPictureMode(params)
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            playlistButton.visibility = View.GONE
+            saveButton.visibility = View.GONE
+            repeatButton.visibility = View.GONE
+            autoNextButton.visibility = View.GONE
+            pipButton.visibility = View.GONE
+        } else {
+            playlistButton.visibility = View.VISIBLE
+            repeatButton.visibility = View.VISIBLE
+            updateAutoNextButtonVisibility()
+            updatePipButtonVisibility()
+            updateSaveButton(webView.url)
+        }
     }
 
     private fun handleIntent(intent: Intent?) {
@@ -148,6 +204,7 @@ class MainActivity : Activity() {
         currentVideoIndex = intent.getIntExtra("video_index", -1)
 
         updateAutoNextButtonVisibility()
+        updatePipButtonVisibility()
 
         when {
             openUrl != null -> webView.loadUrl(openUrl)
@@ -163,35 +220,32 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun injectLoopScript() {
-        injectAudioAndVideoListeners()
+    private fun updatePipButtonVisibility() {
+        val id = YoutubeHelper.extractVideoId(webView.url)
+        if (customView == null && id != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            pipButton.visibility = View.VISIBLE
+        } else {
+            pipButton.visibility = View.GONE
+        }
     }
 
-        private fun injectAudioAndVideoListeners() {
+    private fun injectLoopScript() {
+        val loopJs = "var videos = document.querySelectorAll('video'); videos.forEach(function(v) { v.loop = " + isRepeatEnabled + "; });"
+        webView.evaluateJavascript(loopJs, null)
+    }
+
+    private fun injectAudioAndVideoListeners() {
         val js = "(function() {" +
-                "window.gsIsRepeat = " + isRepeatEnabled + ";" +
                 "function applySettings() {" +
                 "var videos = document.querySelectorAll('video');" +
                 "videos.forEach(function(video) {" +
                 "video.muted = false;" +
                 "video.volume = 1.0;" +
-                "video.loop = window.gsIsRepeat;" +
-                "if (!video.hasAttribute('data-gs-listeners')) {" +
-                "video.setAttribute('data-gs-listeners', 'true');" +
-                "video.addEventListener('ended', function(e) {" +
-                "if (window.gsIsRepeat) {" +
-                "e.stopPropagation();" +
-                "video.currentTime = 0;" +
-                "video.play();" +
-                "} else {" +
+                "if (" + isRepeatEnabled + ") { video.loop = true; } else { video.loop = false; }" +
+                "if (!video.hasAttribute('data-ended-listener')) {" +
+                "video.setAttribute('data-ended-listener', 'true');" +
+                "video.addEventListener('ended', function() {" +
                 "if (window.AndroidBridge) { window.AndroidBridge.onVideoEnded(); }" +
-                "}" +
-                "});" +
-                "video.addEventListener('timeupdate', function() {" +
-                "if (window.gsIsRepeat && video.duration && video.currentTime >= video.duration - 0.4) {" +
-                "video.currentTime = 0;" +
-                "video.play();" +
-                "}" +
                 "});" +
                 "}" +
                 "});" +
@@ -199,15 +253,19 @@ class MainActivity : Activity() {
                 "applySettings();" +
                 "if (!window.gsIntervalSet) {" +
                 "window.gsIntervalSet = true;" +
-                "setInterval(applySettings, 300);" +
+                "setInterval(applySettings, 500);" +
                 "}" +
                 "})();"
         webView.evaluateJavascript(js, null)
-    }private inner class WebAppInterface {
+    }
+
+    private inner class WebAppInterface {
         @JavascriptInterface
         fun onVideoEnded() {
             runOnUiThread {
-                if (isAutoNextEnabled && currentPlaylistId != null && currentVideoIndex >= 0) {
+                if (isRepeatEnabled) {
+                    webView.evaluateJavascript("var videos = document.querySelectorAll('video'); videos.forEach(function(v) { v.currentTime = 0; v.play(); });", null)
+                } else if (isAutoNextEnabled && currentPlaylistId != null && currentVideoIndex >= 0) {
                     playNextVideoInPlaylist()
                 }
             }
@@ -254,7 +312,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun fabParams(gravity: Int, marginSideDp: Int) = FrameLayout.LayoutParams(
+    private fun fabParams(gravity: Int, marginSideDp: Int, marginBottomDp: Int) = FrameLayout.LayoutParams(
         (56 * resources.displayMetrics.density).toInt(),
         (56 * resources.displayMetrics.density).toInt(),
         gravity
@@ -262,17 +320,14 @@ class MainActivity : Activity() {
         val m = (marginSideDp * resources.displayMetrics.density).toInt()
         leftMargin = m
         rightMargin = m
-        bottomMargin = (96 * resources.displayMetrics.density).toInt()
+        topMargin = m
+        bottomMargin = (marginBottomDp * resources.displayMetrics.density).toInt()
     }
 
     private fun updateSaveButton(url: String?) {
         val id = YoutubeHelper.extractVideoId(url)
         if (customView == null) {
-            val hasVideo = (id != null)
-            saveButton.visibility = if (hasVideo) View.VISIBLE else View.INVISIBLE
-            // repeatButton հայտնվում է միայն այն ժամանակ, երբ վիդեոն պատրաստ է և հայտնի են բոլոր տվյալները (id != null), 
-            // կամ քանի դեռ repeat-ը միացված է (isRepeatEnabled), որպեսզի հնարավոր լինի կառավարել այն անկախ վիդեոյի փոփոխությունից։
-            repeatButton.visibility = if (hasVideo || isRepeatEnabled) View.VISIBLE else View.INVISIBLE
+            saveButton.visibility = if (id != null) View.VISIBLE else View.INVISIBLE
         }
     }
 
