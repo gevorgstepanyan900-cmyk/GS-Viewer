@@ -16,6 +16,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.Icon
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -24,7 +25,9 @@ import android.util.Rational
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -468,6 +471,7 @@ class MainActivity : Activity() {
         }
 
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
+        applyRegionCookie()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(pipReceiver, IntentFilter(ACTION_MEDIA_CONTROL), RECEIVER_NOT_EXPORTED)
@@ -509,6 +513,18 @@ class MainActivity : Activity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val req = request ?: return false
+                if (req.isForMainFrame && req.method == "GET") {
+                    val url = req.url.toString()
+                    val fixed = withUzbekRegion(url)
+                    if (fixed != url) {
+                        view?.loadUrl(fixed)
+                        return true
+                    }
+                }
+                return false
+            }
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 injectCoreProtectionScript()
@@ -611,6 +627,54 @@ class MainActivity : Activity() {
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+        }
+    }
+
+    // ------------------------------------------------------------------------------------
+    // REGION: YouTube is always asked for the Uzbekistan (UZ) region.
+    //  * every YouTube page that is opened gets the parameter  gl=UZ
+    //  * the YouTube preference cookie (PREF) is set to  gl=UZ  before anything is loaded,
+    //    so the page's own requests (search, recommendations, next videos) use UZ as well.
+    // ------------------------------------------------------------------------------------
+    private val regionParamRegex = Regex("([?&])gl=[^&#]*")
+
+    private fun withUzbekRegion(url: String): String {
+        val host = try { Uri.parse(url).host?.lowercase() } catch (e: Exception) { null } ?: return url
+        val isYoutube = host == "youtube.com" || host == "www.youtube.com" ||
+            host == "m.youtube.com" || host == "music.youtube.com"
+        if (!isYoutube) return url
+
+        val hashIdx = url.indexOf('#')
+        val base = if (hashIdx >= 0) url.substring(0, hashIdx) else url
+        val fragment = if (hashIdx >= 0) url.substring(hashIdx) else ""
+        val fixedBase = if (regionParamRegex.containsMatchIn(base)) {
+            base.replace(regionParamRegex, "\$1gl=UZ")
+        } else {
+            base + (if (base.contains('?')) "&" else "?") + "gl=UZ"
+        }
+        return fixedBase + fragment
+    }
+
+    private fun applyRegionCookie() {
+        try {
+            val cm = CookieManager.getInstance()
+            cm.setAcceptCookie(true)
+            val existing = cm.getCookie("https://m.youtube.com") ?: ""
+            val pref = existing.split(";")
+                .map { it.trim() }
+                .firstOrNull { it.startsWith("PREF=") }
+                ?.removePrefix("PREF=") ?: ""
+            val parts = pref.split("&")
+                .filter { it.isNotEmpty() && !it.startsWith("gl=") }
+                .toMutableList()
+            parts.add("gl=UZ")
+            cm.setCookie(
+                "https://m.youtube.com",
+                "PREF=" + parts.joinToString("&") + "; Domain=.youtube.com; Path=/; Max-Age=31536000; Secure"
+            )
+            cm.flush()
+        } catch (e: Exception) {
+            dbg("region cookie failed: $e")
         }
     }
 
@@ -919,8 +983,8 @@ class MainActivity : Activity() {
         syncAutoNextStateToJs()
 
         when {
-            openUrl != null -> webView.loadUrl(openUrl)
-            else -> if (webView.url == null) webView.loadUrl("https://m.youtube.com")
+            openUrl != null -> webView.loadUrl(withUzbekRegion(openUrl))
+            else -> if (webView.url == null) webView.loadUrl(withUzbekRegion("https://m.youtube.com/"))
         }
     }
 
@@ -1001,7 +1065,7 @@ class MainActivity : Activity() {
         if (nextIndex < videos.size) {
             currentVideoIndex = nextIndex
             val nextVideo = videos[nextIndex]
-            webView.loadUrl(nextVideo.url)
+            webView.loadUrl(withUzbekRegion(nextVideo.url))
             if (!isPipModeActive) {
                 Toast.makeText(this, "Հաջորդ տեսանյութը: ${nextVideo.title}", Toast.LENGTH_SHORT).show()
             }
