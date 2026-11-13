@@ -1,5 +1,6 @@
 package com.example.gsviewer
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
@@ -64,11 +65,12 @@ class MainActivity : Activity() {
     // PiP Control Constants
     companion object {
         private const val TAG = "GSViewer"
-        private const val ACTION_MEDIA_CONTROL = "com.example.gsviewer.MEDIA_CONTROL"
-        private const val EXTRA_CONTROL_TYPE = "control_type"
-        private const val CONTROL_TYPE_PLAY_PAUSE = 1
-        private const val CONTROL_TYPE_REWIND = 2
-        private const val CONTROL_TYPE_FORWARD = 3
+        internal const val ACTION_MEDIA_CONTROL = "com.example.gsviewer.MEDIA_CONTROL"
+        internal const val EXTRA_CONTROL_TYPE = "control_type"
+        internal const val CONTROL_TYPE_PLAY_PAUSE = 1
+        internal const val CONTROL_TYPE_REWIND = 2
+        internal const val CONTROL_TYPE_FORWARD = 3
+        internal const val CONTROL_TYPE_CLOSE = 4
 
         // How long (ms) after every mode/lifecycle change the page-side "keeper" protects playback.
         private const val GUARD_MS = 5000
@@ -112,6 +114,7 @@ class MainActivity : Activity() {
     window.__gsOurPauseAt = 0;          // last pause that the app itself (our buttons) requested
     window.__gsGuardUntil = window.__gsGuardUntil || 0;
     window.__gsPip = !!window.__gsPip;  // true while the mini window is shown
+    window.__gsBg = !!window.__gsBg;    // true while the app is in the background / screen is off
     window.__gsKicks = 0;
     window.__gsResumeBusy = false;
 
@@ -122,7 +125,7 @@ class MainActivity : Activity() {
         } catch (e) { return location.href; }
     }
 
-    function isProtected() { return !!window.__gsPip || now() < window.__gsGuardUntil; }
+    function isProtected() { return !!window.__gsPip || !!window.__gsBg || now() < window.__gsGuardUntil; }
 
     function userActed() {
         var t = now();
@@ -417,6 +420,14 @@ class MainActivity : Activity() {
     private var isVideoPlaying: Boolean = true
     private var wasInPip: Boolean = false
 
+    // Screen-off / background playback state
+    private var isActivityResumed: Boolean = false
+    private var inBackground: Boolean = false
+    private var playbackReported: Boolean = false
+    private var keepAliveRunning: Boolean = false
+    private var lastKeepPlaying: Boolean? = null
+    private var lastKeepTitle: String? = null
+
     // While the system is still switching to the mini window, isInPictureInPictureMode can be
     // false for a moment. During this window we must not treat the activity as "back in full mode".
     private var pipTransitionUntil: Long = 0L
@@ -427,7 +438,12 @@ class MainActivity : Activity() {
             when (intent.getIntExtra(EXTRA_CONTROL_TYPE, 0)) {
                 CONTROL_TYPE_PLAY_PAUSE -> {
                     armGuard()
+                    ensureWebViewRunning()
                     webView.evaluateJavascript("(window.__gsToggle || function(){})();", null)
+                }
+                CONTROL_TYPE_CLOSE -> {
+                    stopKeepAlive(true)
+                    finishAndRemoveTask()
                 }
                 CONTROL_TYPE_REWIND ->
                     webView.evaluateJavascript("(window.__gsSeek || function(){})(-10);", null)
@@ -441,7 +457,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         rootFrame = FrameLayout(this)
-        webView = WebView(this)
+        webView = KeepAliveWebView(this)
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -511,6 +527,7 @@ class MainActivity : Activity() {
                 super.onPageFinished(view, url)
                 updateSaveButton(url)
                 injectCoreProtectionScript()
+                syncKeepAlive()
             }
         }
 
@@ -588,6 +605,13 @@ class MainActivity : Activity() {
             handleIntent(intent)
         }
         updateSaveButton(webView.url)
+
+        if (savedInstanceState == null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+        }
     }
 
     private fun dbg(msg: String) {
@@ -604,6 +628,66 @@ class MainActivity : Activity() {
     private fun pushPipState() {
         if (!::webView.isInitialized) return
         webView.evaluateJavascript("window.__gsPip = $isPipModeActive;", null)
+    }
+
+    /** Tells the page whether the app is in the background (screen off, other app on top). */
+    private fun pushBackgroundState() {
+        if (!::webView.isInitialized) return
+        webView.evaluateJavascript("window.__gsBg = $inBackground;", null)
+    }
+
+    private fun ensureWebViewRunning() {
+        webView.onResume()
+        webView.resumeTimers()
+    }
+
+    private fun notificationTitle(): String {
+        val t = webView.title?.removeSuffix(" - YouTube")?.trim()
+        return if (t.isNullOrEmpty()) "GSViewer" else t
+    }
+
+    /**
+     * Screen-off playback: while a video is playing, a foreground service (with a notification and
+     * wake locks) keeps the app alive, so playback, repeat and auto-next continue with the screen off.
+     */
+    private fun syncKeepAlive() {
+        if (!::webView.isInitialized || !playbackReported) return
+        if (isVideoPlaying) {
+            if (!isActivityResumed) ensureWebViewRunning()
+            sendKeepAlive(true)
+        } else if (isActivityResumed || isPipModeActive) {
+            stopKeepAlive()
+        } else if (keepAliveRunning) {
+            sendKeepAlive(false)
+        }
+    }
+
+    private fun sendKeepAlive(playing: Boolean) {
+        val title = notificationTitle()
+        if (keepAliveRunning && lastKeepPlaying == playing && lastKeepTitle == title) return
+        try {
+            val i = Intent(this, PlaybackService::class.java)
+                .putExtra(PlaybackService.EXTRA_PLAYING, playing)
+                .putExtra(PlaybackService.EXTRA_TITLE, title)
+            startForegroundService(i)
+            keepAliveRunning = true
+            lastKeepPlaying = playing
+            lastKeepTitle = title
+        } catch (e: Exception) {
+            dbg("keep-alive service start failed: $e")
+        }
+    }
+
+    private fun stopKeepAlive(force: Boolean = false) {
+        if (!keepAliveRunning && !force) return
+        keepAliveRunning = false
+        lastKeepPlaying = null
+        lastKeepTitle = null
+        try {
+            stopService(Intent(this, PlaybackService::class.java))
+        } catch (e: Exception) {
+            dbg("keep-alive service stop failed: $e")
+        }
     }
 
     private fun hideAllFabs() {
@@ -865,7 +949,8 @@ class MainActivity : Activity() {
         val stateJs = "window.__gsRepeatEnabled = $isRepeatEnabled; " +
             "window.__gsAutoNextEnabled = $isAutoNextEnabled; " +
             "window.__gsHasPlaylist = $hasPlaylist; " +
-            "window.__gsPip = $isPipModeActive;\n"
+            "window.__gsPip = $isPipModeActive; " +
+            "window.__gsBg = $inBackground;\n"
         webView.evaluateJavascript(stateJs + CORE_JS, null)
     }
 
@@ -980,14 +1065,17 @@ class MainActivity : Activity() {
 
     /** Single entry point for any playback-state change coming from the page (UI only). */
     private fun applyPlaybackState(playing: Boolean) {
+        playbackReported = true
         if (isVideoPlaying == playing) {
             // Nothing changed for the user; still make sure the icons are correct.
             updatePlayPauseButton()
+            syncKeepAlive()
             return
         }
         isVideoPlaying = playing
         updatePlayPauseButton()
         updatePipActions()
+        syncKeepAlive()
     }
 
     private fun showPlaylistSelectionDialog() {
@@ -1086,9 +1174,17 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        dbg("onPause pip=$isPipModeActive")
+        dbg("onPause pip=$isPipModeActive playing=$isVideoPlaying")
+        isActivityResumed = false
+        inBackground = true
+        pushBackgroundState()
         armGuard()
-        if (!isPipModeActive && SystemClock.uptimeMillis() >= pipTransitionUntil) {
+        syncKeepAlive()
+        // Keep the page running while a video plays (screen off / other app), in the mini window,
+        // and during the switch to the mini window. Only an idle page is paused.
+        val keepRunning = isPipModeActive || isVideoPlaying ||
+            SystemClock.uptimeMillis() < pipTransitionUntil
+        if (!keepRunning) {
             webView.onPause()
         } else {
             webView.onResume()
@@ -1114,6 +1210,9 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         dbg("onResume inPip=$isInPictureInPictureMode")
+        isActivityResumed = true
+        inBackground = false
+        pushBackgroundState()
         armGuard()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !isInPictureInPictureMode &&
@@ -1127,14 +1226,28 @@ class MainActivity : Activity() {
         }
         webView.onResume()
         webView.resumeTimers()
+        syncKeepAlive()
     }
 
     override fun onDestroy() {
         try {
             unregisterReceiver(pipReceiver)
         } catch (e: Exception) {}
+        stopKeepAlive(true)
         scope.cancel()
         webView.destroy()
         super.onDestroy()
+    }
+}
+
+/** A WebView that is not hidden when the screen turns off, so audio and video keep playing. */
+private class KeepAliveWebView(context: Context) : WebView(context) {
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        if (visibility != View.GONE) super.onWindowVisibilityChanged(View.VISIBLE)
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        if (visibility != View.GONE) super.onVisibilityChanged(changedView, View.VISIBLE)
+        else super.onVisibilityChanged(changedView, visibility)
     }
 }
