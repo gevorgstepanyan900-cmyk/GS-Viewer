@@ -34,6 +34,7 @@
 
         <activity android:name=".PlaylistActivity" android:exported="false" />
         <activity android:name=".VideosActivity" android:exported="false" />
+        <activity android:name=".HistoryActivity" android:exported="false" />
         
     </application>
 </manifest>

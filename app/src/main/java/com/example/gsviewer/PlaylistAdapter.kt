@@ -9,12 +9,14 @@ import androidx.recyclerview.widget.RecyclerView
 class PlaylistAdapter(
     private val items: List<Playlist>,
     private val onClick: (Playlist) -> Unit,
-    private val onLongClick: (Playlist) -> Unit
+    private val onLongClick: (Playlist) -> Unit,
+    private val onRename: (Playlist) -> Unit
 ) : RecyclerView.Adapter<PlaylistAdapter.VH>() {
 
     class VH(view: View) : RecyclerView.ViewHolder(view) {
         val name: TextView = view.findViewById(R.id.playlist_name)
         val count: TextView = view.findViewById(R.id.playlist_count)
+        val rename: TextView = view.findViewById(R.id.playlist_rename)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -30,6 +32,7 @@ class PlaylistAdapter(
 
         holder.itemView.setOnClickListener { onClick(playlist) }
         holder.itemView.setOnLongClickListener { onLongClick(playlist); true }
+        holder.rename.setOnClickListener { onRename(playlist) }
     }
 
     override fun getItemCount() = items.size

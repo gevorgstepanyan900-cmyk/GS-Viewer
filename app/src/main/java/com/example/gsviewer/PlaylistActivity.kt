@@ -20,6 +20,9 @@ class PlaylistActivity : Activity() {
         findViewById<android.view.View>(R.id.btn_add_playlist).setOnClickListener {
             showCreatePlaylistDialog()
         }
+        findViewById<android.view.View>(R.id.btn_history).setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
     }
 
     override fun onResume() {
@@ -38,6 +41,9 @@ class PlaylistActivity : Activity() {
             },
             onLongClick = { playlist ->
                 showPlaylistOptionsDialog(playlist)
+            },
+            onRename = { playlist ->
+                renamePlaylist(playlist)
             }
         )
         recycler.adapter = adapter
@@ -75,6 +81,7 @@ class PlaylistActivity : Activity() {
     private fun renamePlaylist(playlist: Playlist) {
         val input = EditText(this)
         input.setText(playlist.name)
+        input.setSelection(input.text.length)
         AlertDialog.Builder(this)
             .setTitle("Վերանվանել")
             .setView(input)

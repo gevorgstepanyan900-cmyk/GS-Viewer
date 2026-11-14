@@ -23,6 +23,17 @@
         android:paddingBottom="80dp" />
 
     <Button
+        android:id="@+id/btn_history"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:layout_alignParentStart="true"
+        android:layout_margin="16dp"
+        android:text="🕒 Պատմություն"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#607D8B" />
+
+    <Button
         android:id="@+id/btn_add_playlist"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
