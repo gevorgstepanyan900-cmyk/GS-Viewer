@@ -65,11 +65,12 @@ class MainActivity : Activity() {
 
     // PiP Control Constants
     companion object {
-        private const val ACTION_MEDIA_CONTROL = "com.example.gsviewer.MEDIA_CONTROL"
-        private const val EXTRA_CONTROL_TYPE = "control_type"
-        private const val CONTROL_TYPE_PLAY_PAUSE = 1
-        private const val CONTROL_TYPE_REWIND = 2
-        private const val CONTROL_TYPE_FORWARD = 3
+        const val ACTION_MEDIA_CONTROL = "com.example.gsviewer.MEDIA_CONTROL"
+        const val EXTRA_CONTROL_TYPE = "control_type"
+        const val CONTROL_TYPE_PLAY_PAUSE = 1
+        const val CONTROL_TYPE_REWIND = 2
+        const val CONTROL_TYPE_FORWARD = 3
+        const val CONTROL_TYPE_CLOSE = 4
 
         // Single source of truth for page-side logic. Installed once per document;
         // later injections only refresh state (see injectCoreProtectionScript).
@@ -228,6 +229,8 @@ class MainActivity : Activity() {
                     keepPlayingUntil = 0L
                     webView.evaluateJavascript("(window.__gsToggle || function(){})();", null)
                 }
+                CONTROL_TYPE_CLOSE ->
+                    webView.evaluateJavascript("(window.__gsPause || function(){})();", null)
                 CONTROL_TYPE_REWIND ->
                     webView.evaluateJavascript("(window.__gsSeek || function(){})(-10);", null)
                 CONTROL_TYPE_FORWARD ->
