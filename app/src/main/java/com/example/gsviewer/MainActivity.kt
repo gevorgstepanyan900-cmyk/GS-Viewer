@@ -333,6 +333,117 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------------- ADS & CLUTTER DURING THE VIDEO ----------------
+    // 1) the ad data is removed from the player data YouTube sends (so most ads are never created),
+    // 2) an ad that still appears is skipped: Skip button pressed / the ad is fast-forwarded to its end,
+    // 3) overlays, info cards, end-screen suggestions, promo banners and ad slots are hidden.
+    // Nothing here touches the real video: it only acts while YouTube says "an ad is showing".
+    function stripAdData(o) {
+        if (!o || typeof o !== 'object') return;
+        if (o.adPlacements) delete o.adPlacements;
+        if (o.playerAds) delete o.playerAds;
+        if (o.adSlots) delete o.adSlots;
+        if (o.adBreakHeartbeatParams) delete o.adBreakHeartbeatParams;
+        if (o.playerResponse && typeof o.playerResponse === 'object') stripAdData(o.playerResponse);
+        if (Array.isArray(o)) {
+            for (var i = 0; i < o.length && i < 4; i++) {
+                if (o[i] && typeof o[i] === 'object' && o[i].playerResponse) stripAdData(o[i].playerResponse);
+            }
+        }
+    }
+    var origJsonParse = JSON.parse;
+    JSON.parse = function() {
+        var r = origJsonParse.apply(this, arguments);
+        try { stripAdData(r); } catch (e) {}
+        return r;
+    };
+    try {
+        var origResponseJson = Response.prototype.json;
+        Response.prototype.json = function() {
+            return origResponseJson.apply(this, arguments).then(function(r) {
+                try { stripAdData(r); } catch (e) {}
+                return r;
+            });
+        };
+    } catch (e) {}
+
+    var AD_CSS =
+        '.ytp-ad-overlay-container, .ytp-ad-text-overlay, .ytp-ad-image-overlay, .ytp-ad-overlay-slot, ' +
+        '.ytp-ce-element, .ytp-cards-teaser, .ytp-cards-button, .ytp-watermark, .ytp-paid-content-overlay, ' +
+        '.ytp-endscreen-content, .ytp-suggestion-set, .ytp-videowall-still, .ytp-pause-overlay, ' +
+        'ytm-promoted-sparkles-web-renderer, ytm-promoted-video-renderer, ytm-companion-slot, ytm-companion-ad-renderer, ' +
+        'ytm-display-ad-renderer, ytm-ad-slot-renderer, ytm-in-feed-ad-layout-renderer, ytm-statement-banner-renderer, ' +
+        'ytm-brand-video-singleton-renderer, ytm-mealbar-promo-renderer, #player-ads { display: none !important; }';
+
+    function ensureAdStyle() {
+        try {
+            if (document.getElementById('gs-ad-style')) return;
+            var st = document.createElement('style');
+            st.id = 'gs-ad-style';
+            st.textContent = AD_CSS;
+            (document.head || document.documentElement).appendChild(st);
+        } catch (e) {}
+    }
+
+    // Strong signal: the player itself says that an ad is playing.
+    function adClassShowing() {
+        try {
+            var p = document.getElementById('movie_player');
+            return !!(p && p.classList && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting')));
+        } catch (e) { return false; }
+    }
+
+    // Weaker signal: an ad control that is really visible on the screen.
+    function adOverlayVisible() {
+        try {
+            var els = document.querySelectorAll('.ytp-ad-player-overlay, .ytp-ad-player-overlay-layout, .ytp-ad-preview-container, .ytp-ad-skip-button-container');
+            for (var i = 0; i < els.length; i++) {
+                if (els[i].getClientRects && els[i].getClientRects().length > 0) return true;
+            }
+        } catch (e) {}
+        return false;
+    }
+
+    function isAdShowing() { return adClassShowing() || adOverlayVisible(); }
+
+    // True while an ad is showing and for 1.5 s after it (an ad's "ended" must never count as the video's end).
+    function adJustEnded() {
+        if (isAdShowing()) { window.__gsLastAdAt = now(); return true; }
+        return now() - (window.__gsLastAdAt || 0) < 1500;
+    }
+
+    var SKIP_SELECTOR = '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, ' +
+        '.ytp-ad-skip-button-container button, .ytp-ad-skip-button-slot button';
+    window.__gsAdTicks = 0;
+
+    function skipAds() {
+        try {
+            if (!isAdShowing()) {
+                if (window.__gsAdTicks > 0) {
+                    window.__gsAdTicks = 0;
+                    var vv = window.__gsVideo();
+                    if (vv && window.__gsRateBeforeAd !== undefined) { try { vv.playbackRate = window.__gsRateBeforeAd; } catch (e) {} }
+                    window.__gsRateBeforeAd = undefined;
+                }
+                return;
+            }
+            window.__gsLastAdAt = now();
+            window.__gsAdTicks++;
+            var btn = document.querySelector(SKIP_SELECTOR);
+            if (btn) { btn.click(); window.__gsLog('ad: Skip button pressed'); }
+            var v = window.__gsVideo();
+            // Only a short video, and only after the ad has been seen twice in a row (never the real video).
+            if (v && adClassShowing() && window.__gsAdTicks >= 2 && isFinite(v.duration) && v.duration > 0 && v.duration <= 120) {
+                if (window.__gsRateBeforeAd === undefined) window.__gsRateBeforeAd = v.playbackRate || 1;
+                try { v.playbackRate = 16; } catch (e) {}
+                if (v.currentTime < v.duration - 0.2) {
+                    v.currentTime = v.duration - 0.1;
+                    window.__gsLog('ad: fast-forwarded to its end');
+                }
+            }
+        } catch (e) {}
+    }
+
     // A pause event arrived. Decide: real user pause (respect it) or unwanted pause (undo it).
     function onPaused(video) {
         if (video.ended) return;
@@ -351,6 +462,7 @@ class MainActivity : Activity() {
         video.setAttribute('data-gs-bound', 'true');
         video.__gsNextSent = false;
         video.addEventListener('ended', function() {
+            if (adJustEnded()) { window.__gsReport(false); return; }
             if (video === window.__gsWantVideo) window.__gsWant = false;
             notifyEnded(video);
             window.__gsReport(false);
@@ -376,6 +488,9 @@ class MainActivity : Activity() {
     }
 
     window.__gsScan = function() {
+        ensureAdStyle();
+        skipAds();
+        var adNow = adJustEnded();
         var videos = document.querySelectorAll('video');
         for (var i = 0; i < videos.length; i++) {
             var video = videos[i];
@@ -385,7 +500,7 @@ class MainActivity : Activity() {
             video.loop = !!window.__gsRepeatEnabled;
 
             // Fallback for the end of the video (YouTube sometimes skips 'ended').
-            if (video.duration > 1 && !isNaN(video.duration) && !video.paused) {
+            if (!adNow && video.duration > 1 && !isNaN(video.duration) && !video.paused) {
                 var remaining = video.duration - video.currentTime;
                 if (remaining <= 0.35 && remaining >= 0) {
                     if (!window.__gsRepeatEnabled) notifyEnded(video);
@@ -415,6 +530,7 @@ class MainActivity : Activity() {
     };
 
     window.__gsScanner = setInterval(window.__gsScan, 300);
+    window.__gsAdScanner = setInterval(skipAds, 200);
     window.__gsScan();
 })();
 """
