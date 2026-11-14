@@ -2,48 +2,58 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:layout_marginTop="6dp"
+    android:layout_marginBottom="6dp"
     android:orientation="horizontal"
     android:gravity="center_vertical"
-    android:paddingTop="16dp"
-    android:paddingBottom="16dp"
-    android:paddingStart="16dp"
-    android:paddingEnd="8dp"
-    android:background="?android:attr/selectableItemBackground"
+    android:padding="12dp"
+    android:background="@drawable/bg_card"
     android:clickable="true"
     android:focusable="true">
+
+    <ImageView
+        android:id="@+id/cover"
+        android:layout_width="84dp"
+        android:layout_height="84dp"
+        android:scaleType="centerCrop"
+        android:background="@drawable/bg_thumb" />
 
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:orientation="vertical">
+        android:orientation="vertical"
+        android:paddingStart="14dp"
+        android:paddingEnd="8dp">
 
         <TextView
             android:id="@+id/playlist_name"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="18sp"
-            android:textStyle="bold"
-            android:textColor="#000000" />
+            android:maxLines="2"
+            android:ellipsize="end"
+            android:textColor="@color/gs_text"
+            android:textSize="17sp"
+            android:textStyle="bold" />
 
         <TextView
             android:id="@+id/playlist_count"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="14sp"
-            android:textColor="#666666"
-            android:paddingTop="4dp" />
+            android:paddingTop="4dp"
+            android:textColor="@color/gs_muted"
+            android:textSize="13sp" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/playlist_rename"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="✏️"
-        android:textSize="22sp"
-        android:padding="12dp"
-        android:contentDescription="Վերանվանել"
-        android:background="?android:attr/selectableItemBackgroundBorderless"
+    <ImageView
+        android:id="@+id/btn_more"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:padding="8dp"
+        android:src="@drawable/ic_more"
+        android:alpha="0.7"
+        android:background="@drawable/bg_round_btn"
+        android:contentDescription="Ավելին"
         android:clickable="true"
         android:focusable="true" />
 </LinearLayout>

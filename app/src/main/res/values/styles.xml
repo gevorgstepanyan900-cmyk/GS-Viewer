@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="GSTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/gs_bg</item>
+        <item name="android:statusBarColor">@color/gs_bg</item>
+        <item name="android:navigationBarColor">@color/gs_bg</item>
+        <item name="android:colorAccent">@color/gs_accent</item>
+        <item name="android:colorPrimary">@color/gs_surface</item>
+        <item name="android:textColorPrimary">@color/gs_text</item>
+        <item name="android:textColorSecondary">@color/gs_muted</item>
+        <item name="android:alertDialogTheme">@style/GSDialog</item>
+    </style>
+    <style name="GSDialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/gs_accent</item>
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="android:textColorPrimary">@color/gs_text</item>
+        <item name="android:textColorSecondary">@color/gs_muted</item>
+    </style>
+</resources>

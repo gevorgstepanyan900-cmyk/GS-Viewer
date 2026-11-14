@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="gs_bg">#0E0F13</color>
+    <color name="gs_surface">#171922</color>
+    <color name="gs_surface2">#212433</color>
+    <color name="gs_accent">#7C5CFF</color>
+    <color name="gs_accent2">#22D3EE</color>
+    <color name="gs_text">#F2F3F7</color>
+    <color name="gs_muted">#8C91A3</color>
+    <color name="gs_danger">#FF5C6C</color>
+    <color name="gs_ripple">#33FFFFFF</color>
+</resources>
