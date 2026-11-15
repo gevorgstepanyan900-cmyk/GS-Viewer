@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/gs_bg"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="8dp">
+
+        <ImageView
+            android:id="@+id/btn_back"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_icon_btn"
+            android:contentDescription="@string/cd_back"
+            android:scaleType="center"
+            android:src="@drawable/ic_arrow_back"
+            android:tint="@color/gs_text" />
+
+        <TextView
+            android:id="@+id/playlist_title"
+            style="@style/GS.Text.Title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:paddingStart="4dp"
+            android:textSize="22sp" />
+
+        <ImageView
+            android:id="@+id/btn_playlist_more"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_icon_btn"
+            android:contentDescription="@string/cd_more"
+            android:scaleType="center"
+            android:src="@drawable/ic_more_vert"
+            android:tint="@color/gs_text" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="20dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="12dp">
+
+        <TextView
+            android:id="@+id/playlist_meta"
+            style="@style/GS.Text.Meta"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/btn_play_all"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:background="@drawable/bg_button_primary"
+            android:drawableStart="@drawable/ic_play"
+            android:drawablePadding="6dp"
+            android:drawableTint="@color/gs_white"
+            android:gravity="center"
+            android:paddingStart="16dp"
+            android:paddingEnd="22dp"
+            android:text="@string/play_all"
+            android:textColor="@color/gs_white"
+            android:textSize="14sp"
+            android:fontFamily="sans-serif-medium" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recycler_videos"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingBottom="24dp" />
+
+        <LinearLayout
+            android:id="@+id/empty_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:padding="32dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/empty_icon"
+                android:layout_width="88dp"
+                android:layout_height="88dp"
+                android:background="@drawable/bg_circle_accent"
+                android:padding="24dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_library"
+                android:tint="@color/gs_white"
+                android:importantForAccessibility="no" />
+
+            <TextView
+                android:id="@+id/empty_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingTop="20dp"
+                android:gravity="center"
+                android:textColor="@color/gs_text"
+                android:textSize="18sp"
+                android:fontFamily="sans-serif-medium" />
+
+            <TextView
+                android:id="@+id/empty_hint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingTop="8dp"
+                android:gravity="center"
+                android:textColor="@color/gs_text_secondary"
+                android:textSize="14sp"
+                android:lineSpacingMultiplier="1.15" />
+        </LinearLayout>
+
+    </FrameLayout>
+</LinearLayout>
