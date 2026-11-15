@@ -41,7 +41,7 @@ class PlaybackService : Service() {
                 val channel = NotificationChannel(
                     CHANNEL_ID, "GSViewer", NotificationManager.IMPORTANCE_LOW
                 ).apply {
-                    description = "Նվագարկում ֆոնում"
+                    description = context.getString(R.string.notif_channel_desc)
                     setShowBadge(false)
                 }
                 nm.createNotificationChannel(channel)
@@ -67,12 +67,12 @@ class PlaybackService : Service() {
             )
             val toggleIcon =
                 if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
-            val toggleTitle = if (playing) "Դադար" else "Նվագարկել"
+            val toggleTitle = context.getString(if (playing) R.string.cd_pause else R.string.cd_play)
 
             return Notification.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_media_play)
                 .setContentTitle(title)
-                .setContentText(if (playing) "Նվագարկվում է" else "Դադար")
+                .setContentText(context.getString(if (playing) R.string.notif_playing else R.string.notif_paused))
                 .setContentIntent(open)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
@@ -88,7 +88,7 @@ class PlaybackService : Service() {
                 .addAction(
                     Notification.Action.Builder(
                         Icon.createWithResource(context, android.R.drawable.ic_menu_close_clear_cancel),
-                        "Փակել",
+                        context.getString(R.string.notif_close),
                         controlIntent(context, MainActivity.CONTROL_TYPE_CLOSE)
                     ).build()
                 )

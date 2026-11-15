@@ -11,7 +11,9 @@ data class HistoryEntry(
     val title: String,
     val thumbnailUrl: String,
     val watchedAt: Long
-)
+) {
+    fun toSavedVideo() = SavedVideo(videoId, url, title, thumbnailUrl)
+}
 
 /**
  * Watch history: every video that was really watched (played for a few seconds) is kept for the

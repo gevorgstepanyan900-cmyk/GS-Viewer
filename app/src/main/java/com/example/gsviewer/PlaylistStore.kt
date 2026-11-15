@@ -27,6 +27,40 @@ object PlaylistStore {
             .edit().putString(KEY, json).apply()
     }
 
+    fun getPlaylist(context: Context, playlistId: String): Playlist? =
+        getPlaylists(context).find { it.id == playlistId }
+
+    fun createPlaylist(context: Context, name: String, firstVideo: SavedVideo? = null): Playlist {
+        val playlists = getPlaylists(context)
+        val playlist = Playlist(name = name)
+        if (firstVideo != null) playlist.videos?.add(firstVideo)
+        playlists.add(playlist)
+        savePlaylists(context, playlists)
+        return playlist
+    }
+
+    fun renamePlaylist(context: Context, playlistId: String, newName: String) {
+        val all = getPlaylists(context)
+        all.find { it.id == playlistId }?.name = newName
+        savePlaylists(context, all)
+    }
+
+    fun deletePlaylist(context: Context, playlistId: String) {
+        val all = getPlaylists(context)
+        all.removeAll { it.id == playlistId }
+        savePlaylists(context, all)
+    }
+
+    fun removeVideo(context: Context, playlistId: String, videoId: String) {
+        val all = getPlaylists(context)
+        all.find { it.id == playlistId }?.videos?.removeAll { it.videoId == videoId }
+        savePlaylists(context, all)
+    }
+
+    /** True when the video is in at least one playlist. */
+    fun isVideoSaved(context: Context, videoId: String): Boolean =
+        getPlaylists(context).any { playlist -> playlist.videos?.any { it.videoId == videoId } == true }
+
     fun addVideoToPlaylist(context: Context, playlistId: String, video: SavedVideo): Boolean {
         val playlists = getPlaylists(context)
         val playlist = playlists.find { it.id == playlistId } ?: return false
