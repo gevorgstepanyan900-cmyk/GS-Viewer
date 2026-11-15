@@ -10,6 +10,8 @@
     <color name="gs_text">#F2F4F8</color>
     <color name="gs_text_secondary">#A3ABBD</color>
     <color name="gs_text_tertiary">#6E768A</color>
+    <!-- kept so that leftovers of older versions that still mention it do not break the build -->
+    <color name="gs_muted">#6E768A</color>
     <color name="gs_icon">#E6EAF2</color>
     <color name="gs_white">#FFFFFF</color>
 
