@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Midnight Cinema palette -->
+    <color name="gs_bg">#0B0D12</color>
+    <color name="gs_surface">#141821</color>
+    <color name="gs_surface_high">#1C2230</color>
+    <color name="gs_outline">#2B3247</color>
+    <color name="gs_handle">#3A4157</color>
+
+    <color name="gs_text">#F2F4F8</color>
+    <color name="gs_text_secondary">#A3ABBD</color>
+    <color name="gs_text_tertiary">#6E768A</color>
+    <color name="gs_icon">#E6EAF2</color>
+    <color name="gs_white">#FFFFFF</color>
+
+    <color name="gs_accent">#7B61FF</color>
+    <color name="gs_accent_light">#A594FF</color>
+    <color name="gs_accent_end">#FF5FA2</color>
+    <color name="gs_accent_soft">#387B61FF</color>
+
+    <color name="gs_danger">#FF5C6C</color>
+
+    <color name="gs_dock">#EB141821</color>
+    <color name="gs_chip_dark">#B3141821</color>
+    <color name="gs_toast">#F21C2230</color>
+    <color name="gs_badge">#B3000000</color>
+    <color name="gs_ripple">#33FFFFFF</color>
+    <color name="gs_stroke_soft">#26FFFFFF</color>
+</resources>
